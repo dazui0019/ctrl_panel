@@ -1,0 +1,11 @@
+[project]
+name = "ctrl-panel"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0.0",
+    "pyserial>=3.5",
+    "pyvisa>=1.14.0",
+]
