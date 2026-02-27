@@ -32,8 +32,21 @@
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            grid-template-columns: 1fr 320px;
             gap: 20px;
+        }
+
+        .grid .card:first-child {
+            grid-row: span 2;
+        }
+
+        @media (max-width: 1100px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            .grid .card:first-child {
+                grid-row: auto;
+            }
         }
 
         .card {
@@ -209,7 +222,21 @@
             display: flex;
             flex-direction: column;
             justify-content: center;
-            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .scope-channel:hover {
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+        }
+
+        .scope-channel.disabled {
+            opacity: 0.4;
+            background: #e2e8f0;
+        }
+
+        .scope-channel.disabled::before {
+            color: rgba(102, 126, 234, 0.8);
         }
 
         .scope-channel::before {
@@ -219,7 +246,7 @@
             left: 10px;
             font-size: 16px;
             font-weight: bold;
-            color: rgba(102, 126, 234, 0.3);
+            color: #667eea;
             pointer-events: none;
         }
 
@@ -277,6 +304,171 @@
             padding: 20px;
             color: #718096;
         }
+
+        /* 多设备管理样式 */
+        .device-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+            min-height: 200px;
+            max-height: 600px;
+            overflow-y: auto;
+            padding: 10px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .device-card {
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .device-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        }
+
+        .device-card.selected {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .device-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .device-card-header input[type="checkbox"] {
+            margin: 0;
+        }
+
+        .device-card-name {
+            font-weight: 600;
+            color: #333;
+            flex: 1;
+        }
+
+        .device-card-sn {
+            font-size: 11px;
+            color: #718096;
+        }
+
+        .device-card-value {
+            font-size: 14px;
+            color: #667eea;
+            font-weight: 500;
+            margin-top: 8px;
+        }
+
+        .device-card-actions {
+            display: flex;
+            gap: 5px;
+            margin-top: 8px;
+        }
+
+        .device-card-actions .btn {
+            padding: 5px 10px;
+            font-size: 12px;
+            flex: 1;
+        }
+
+        /* 右键菜单 */
+        .context-menu {
+            display: none;
+            position: fixed;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10000;
+            min-width: 120px;
+        }
+
+        .context-menu-item {
+            padding: 10px 15px;
+            cursor: pointer;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .context-menu-item:hover {
+            background: #f7fafc;
+        }
+
+        .context-menu-item:first-child {
+            border-radius: 6px 6px 0 0;
+        }
+
+        .context-menu-item:last-child {
+            border-radius: 0 0 6px 6px;
+        }
+
+        .context-menu-divider {
+            height: 1px;
+            background: #e2e8f0;
+            margin: 4px 0;
+        }
+
+        /* 模态框 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1001;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .modal h3 {
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        /* 设备输入行 */
+        .device-add-form {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .device-add-form .form-group {
+            flex: 1;
+            min-width: 100px;
+            margin-bottom: 0;
+        }
+
+        .device-add-form .btn {
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -288,89 +480,54 @@
             <div class="card">
                 <h2>电阻控制 <span id="res-title-status"></span></h2>
 
-                <div class="form-group">
-                    <label>串口选择</label>
-                    <div class="inline-form">
-                        <select id="res-port" onchange="resPortChanged()">
-                            <option value="">请选择串口...</option>
-                        </select>
-                        <button class="btn btn-primary" onclick="resToggleConnect()" id="btn-res-connect">连接</button>
-                        <button class="btn btn-secondary" onclick="resRefreshPorts()">刷新</button>
-                    </div>
+                <!-- 串口连接和添加设备 -->
+                <div class="form-group" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                    <label style="margin: 0;">串口</label>
+                    <select id="res-port" onchange="resPortChanged()" style="width: 100px; padding: 5px;">
+                        <option value="">选择</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="resToggleSerial()" id="btn-res-serial-connect" style="padding: 5px 10px;">连接</button>
+                    <button class="btn btn-secondary" onclick="resRefreshPorts()" style="padding: 5px 10px;">刷新</button>
+                    <span style="color: #718096;">|</span>
+                    <span style="margin-left: 5px;">添加:</span>
+                    <input type="text" id="res-device-name" placeholder="名称" style="width: 70px; padding: 5px;">
+                    <input type="text" id="res-device-sn" placeholder="SN" style="width: 50px; padding: 5px;">
+                    <button class="btn btn-primary" onclick="resAddDevice()" style="padding: 5px 10px;">添加</button>
                 </div>
 
                 <div class="divider"></div>
 
-                <div class="section-title">电阻操作</div>
-                <div class="btn-group">
-                    <button class="btn btn-success" onclick="resAction('connect')" id="btn-res-connect">连接</button>
-                    <button class="btn btn-danger" onclick="resAction('disconnect')" id="btn-res-disconnect">断开</button>
-                    <button class="btn btn-warning" onclick="resAction('short')" id="btn-res-short">短路</button>
-                    <button class="btn btn-secondary" onclick="resAction('unshort')" id="btn-res-unshort">取消短路</button>
+                <!-- 设备管理 -->
+                <div class="section-title">
+                    设备管理
+                    <span style="font-weight: normal; font-size: 12px; text-transform: none; color: #718096; margin-left: 10px;">(点击选中，右键菜单)</span>
                 </div>
 
+                <!-- 批量控制按钮 -->
+                <div class="btn-group" style="margin-bottom: 10px;">
+                    <button class="btn btn-success" onclick="resDeviceAction('connect')" id="btn-res-device-connect">连接</button>
+                    <button class="btn btn-danger" onclick="resDeviceAction('disconnect')" id="btn-res-device-disconnect">开路</button>
+                    <button class="btn btn-warning" onclick="resDeviceAction('short')" id="btn-res-device-short">短路</button>
+                    <button class="btn btn-secondary" onclick="resDeviceAction('unshort')" id="btn-res-device-unshort">取消短路</button>
+                    <button class="btn btn-secondary" onclick="resSelectAll()">全选</button>
+                    <button class="btn btn-secondary" onclick="resDeselectAll()">取消</button>
+                    <button class="btn btn-danger" onclick="resDeleteSelected()">删除选中</button>
+                </div>
+
+                <!-- 设备列表 -->
+                <div class="device-grid" id="device-grid">
+                    <div class="loading" id="device-loading">暂无设备，请先连接串口并添加设备</div>
+                </div>
+
+                <!-- 设置日志 -->
                 <div class="divider"></div>
-
-                <div class="section-title">设置电阻值</div>
-                <div class="inline-form">
-                    <div class="form-group">
-                        <input type="number" id="res-value" placeholder="电阻值 (Ω)" min="0" max="7000000">
-                    </div>
-                    <button class="btn btn-primary" onclick="resSetValue()">设置</button>
+                <div class="section-title">
+                    设置日志
+                    <button class="btn btn-secondary" onclick="clearResLog()" style="padding: 2px 8px; font-size: 11px; margin-left: 10px;">清除</button>
                 </div>
-
-                <div class="divider"></div>
-
-                <div class="section-title">按温度设置 (NTC)</div>
-                <div class="inline-form">
-                    <div class="form-group">
-                        <input type="number" id="res-temperature" placeholder="温度 (°C)" min="-40" max="150" style="width: 120px;">
-                    </div>
-                    <button class="btn btn-primary" onclick="resSetByTemperature()">设置</button>
+                <div id="res-log" style="margin: 10px 0; padding: 10px; font-size: 12px; height: 120px; overflow-y: auto; text-align: left; background: #f7fafc; border-radius: 4px;">
+                    <div style="color: #718096;">日志记录...</div>
                 </div>
-            </div>
-
-            <!-- 电源控制 -->
-            <div class="card">
-                <h2>电源控制 <span id="power-title-status"></span></h2>
-
-                <div class="form-group">
-                    <label>VISA 资源</label>
-                    <div class="inline-form">
-                        <select id="power-address" onchange="powerAddressChanged()">
-                            <option value="">请选择电源...</option>
-                        </select>
-                        <button class="btn btn-primary" onclick="powerToggleConnect()" id="btn-power-connect">连接</button>
-                        <button class="btn btn-secondary" onclick="powerRefreshResources()">刷新</button>
-                    </div>
-                </div>
-
-                <div class="divider"></div>
-
-                <div class="section-title">设置参数</div>
-                <div class="inline-form">
-                    <div class="form-group">
-                        <label>电压 (V)</label>
-                        <input type="number" id="power-voltage" step="0.1" value="13.5" style="width: 100px;">
-                    </div>
-                    <div class="form-group">
-                        <label>电流 (A)</label>
-                        <input type="number" id="power-current" step="0.1" value="20" style="width: 100px;">
-                    </div>
-                    <button class="btn btn-primary" onclick="powerSetParams()">设置参数</button>
-                </div>
-
-                <div class="divider"></div>
-
-                <div class="section-title">输出控制</div>
-                <div class="btn-group">
-                    <button class="btn btn-success" onclick="powerSetOutput(true)">开启输出</button>
-                    <button class="btn btn-danger" onclick="powerSetOutput(false)">关闭输出</button>
-                </div>
-
-                <div class="divider"></div>
-
-                <div id="power-measure" class="value-display">-- V, -- A</div>
             </div>
 
             <!-- 示波器控制 -->
@@ -388,21 +545,8 @@
 
                 <div class="divider"></div>
 
-                <div class="form-group">
-                    <label>通道开关</label>
-                    <div class="channel-checkboxes">
-                        <label><input type="checkbox" id="scope-ch1-enable" value="1" onchange="scopeSetChannel(1)"> CH1</label>
-                        <label><input type="checkbox" id="scope-ch2-enable" value="2" onchange="scopeSetChannel(2)"> CH2</label>
-                        <label><input type="checkbox" id="scope-ch3-enable" value="3" onchange="scopeSetChannel(3)"> CH3</label>
-                        <label><input type="checkbox" id="scope-ch4-enable" value="4" onchange="scopeSetChannel(4)"> CH4</label>
-                    </div>
-                </div>
-
-                <div class="divider"></div>
-
                 <div class="section-title">
-                    平均值显示
-                    <span class="scope-unit">(mV/mA)</span>
+                    通道显示 (点击切换开关)
                     <span style="margin-left: 20px; font-weight: normal;">
                         <label for="scope-interval" style="display: inline;">间隔:</label>
                         <input type="number" id="scope-interval" value="1000" min="500" max="10000" step="100"
@@ -410,19 +554,87 @@
                     </span>
                 </div>
                 <div class="scope-channels">
-                    <div class="scope-channel" id="scope-ch1" data-channel="CH1">
+                    <div class="scope-channel" id="scope-ch1" onclick="scopeToggleChannel(1)" style="cursor: pointer;">
+                        <span class="ch-label" style="position:absolute;top:5px;left:10px;font-size:14px;font-weight:bold;color:#333;">CH1</span>
                         <span class="ch-value">--</span>
                     </div>
-                    <div class="scope-channel" id="scope-ch2" data-channel="CH2">
+                    <div class="scope-channel" id="scope-ch2" onclick="scopeToggleChannel(2)" style="cursor: pointer;">
+                        <span class="ch-label" style="position:absolute;top:5px;left:10px;font-size:14px;font-weight:bold;color:#333;">CH2</span>
                         <span class="ch-value">--</span>
                     </div>
-                    <div class="scope-channel" id="scope-ch3" data-channel="CH3">
+                    <div class="scope-channel" id="scope-ch3" onclick="scopeToggleChannel(3)" style="cursor: pointer;">
+                        <span class="ch-label" style="position:absolute;top:5px;left:10px;font-size:14px;font-weight:bold;color:#333;">CH3</span>
                         <span class="ch-value">--</span>
                     </div>
-                    <div class="scope-channel" id="scope-ch4" data-channel="CH4">
+                    <div class="scope-channel" id="scope-ch4" onclick="scopeToggleChannel(4)" style="cursor: pointer;">
+                        <span class="ch-label" style="position:absolute;top:5px;left:10px;font-size:14px;font-weight:bold;color:#333;">CH4</span>
                         <span class="ch-value">--</span>
                     </div>
                 </div>
+            </div>
+
+            <!-- 电源控制 -->
+            <div class="card">
+                <h2>电源控制 <span id="power-title-status"></span></h2>
+
+                <div class="form-group">
+                    <label>VISA 资源</label>
+                    <div class="inline-form">
+                        <select id="power-address" onchange="powerAddressChanged()">
+                            <option value="">请选择电源...</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="powerToggleConnect()" id="btn-power-connect">连接</button>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="section-title">设置</div>
+                <div class="inline-form">
+                    <div class="form-group">
+                        <label>电压 (V)</label>
+                        <input type="number" id="power-voltage" step="0.1" value="13.5" style="width: 100px;">
+                    </div>
+                    <div class="form-group">
+                        <label>电流 (A)</label>
+                        <input type="number" id="power-current" step="0.1" value="20" style="width: 100px;">
+                    </div>
+                    <button class="btn btn-primary" onclick="powerSetParams()">设置</button>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="section-title">输出控制</div>
+                <div class="btn-group">
+                    <button class="btn btn-success" onclick="powerSetOutput(true)">开启输出</button>
+                    <button class="btn btn-danger" onclick="powerSetOutput(false)">关闭输出</button>
+                </div>
+
+                <div class="divider"></div>
+
+                <div id="power-measure" class="value-display">-- V, -- A</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右键菜单 -->
+    <div class="context-menu" id="context-menu">
+        <div class="context-menu-item" onclick="resRenameDeviceFromMenu()">重命名</div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="resDeleteDeviceFromMenu()">删除</div>
+    </div>
+
+    <!-- 重命名模态框 -->
+    <div class="modal-overlay" id="rename-modal">
+        <div class="modal">
+            <h3>重命名设备</h3>
+            <div class="form-group">
+                <label>新名称</label>
+                <input type="text" id="rename-input" placeholder="输入新名称">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeRenameModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveRename()">确定</button>
             </div>
         </div>
     </div>
@@ -431,16 +643,52 @@
         let scopeRefreshTimer = null;
         let powerRefreshTimer = null;
         let scopeConnected = false;
+        let scopeChannelStates = {1: false, 2: false, 3: false, 4: false};  // 通道开关状态
         let powerConnected = false;
-        let resConnected = false;
+        let resSerialConnected = false;
+        let devices = [];  // 设备列表
+        let selectedDevices = new Set();  // 选中的设备
+        let contextMenuSN = null;  // 右键点击的设备SN
 
         // 初始化
         window.onload = async function() {
+            // 先获取设备状态，再加载设备列表
+            await updateDeviceStates();
+
             await Promise.all([
                 resRefreshPorts(),
                 powerRefreshResources()
             ]);
-            updateDeviceStates();
+
+            // 如果串口已连接，确保下拉框显示正确的值
+            if (resSerialConnected && state.resistance_port) {
+                document.getElementById('res-port').value = state.resistance_port;
+            }
+
+            // 如果电源已连接，确保下拉框显示正确的值
+            if (powerConnected && state.power_address) {
+                document.getElementById('power-address').value = state.power_address;
+            }
+
+            // 如果示波器已连接，确保输入框显示正确的值
+            if (scopeConnected && state.scope_serial) {
+                document.getElementById('scope-serial').value = state.scope_serial;
+            }
+
+            // 点击其他地方关闭右键菜单
+            document.addEventListener('click', function(e) {
+                const contextMenu = document.getElementById('context-menu');
+                if (!contextMenu.contains(e.target)) {
+                    contextMenu.style.display = 'none';
+                }
+            });
+        };
+
+        // 保存当前连接的设备信息
+        let state = {
+            resistance_port: null,
+            power_address: null,
+            scope_serial: null
         };
 
         // 更新设备连接状态
@@ -449,20 +697,24 @@
                 const res = await fetch('/api/state');
                 const data = await res.json();
 
-                // 电阻
+                // 保存端口号到全局状态
+                state.resistance_port = data.resistance.port;
+
+                // 电阻（串口连接）
                 if (data.resistance.connected) {
-                    resConnected = true;
+                    resSerialConnected = true;
                     document.getElementById('res-port').value = data.resistance.port || '';
                     document.getElementById('res-port').disabled = true;
-                    document.getElementById('btn-res-connect').textContent = '断开';
-                    document.getElementById('btn-res-short').disabled = false;
-                    document.getElementById('btn-res-unshort').disabled = false;
-                    document.getElementById('res-title-status').textContent = '已连接';
+                    document.getElementById('btn-res-serial-connect').textContent = '断开';
+                    document.getElementById('res-title-status').textContent = '串口已连接';
+                    // 加载设备列表
+                    await resLoadDevices();
                 }
 
                 // 电源
                 if (data.power.connected) {
                     powerConnected = true;
+                    state.power_address = data.power.address;
                     document.getElementById('power-address').value = data.power.address || '';
                     document.getElementById('power-address').disabled = true;
                     document.getElementById('btn-power-connect').textContent = '断开';
@@ -473,6 +725,7 @@
                 // 示波器
                 if (data.scope.connected) {
                     scopeConnected = true;
+                    state.scope_serial = data.scope.serial;
                     document.getElementById('scope-serial').value = data.scope.serial || '';
                     document.getElementById('scope-serial').disabled = true;
                     document.getElementById('btn-scope-connect').textContent = '断开';
@@ -495,7 +748,7 @@
             }
         }
 
-        // ===== 电阻控制 =====
+        // ===== 电阻控制 (多设备RS485) =====
         async function resRefreshPorts() {
             try {
                 const res = await fetch('/api/res/list_ports');
@@ -510,7 +763,15 @@
             }
         }
 
-        async function resConnect() {
+        async function resToggleSerial() {
+            if (resSerialConnected) {
+                await resSerialDisconnect();
+            } else {
+                await resSerialConnect();
+            }
+        }
+
+        async function resSerialConnect() {
             const port = document.getElementById('res-port').value;
             if (!port) {
                 return;
@@ -524,25 +785,36 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    resConnected = true;
-                    document.getElementById('res-title-status').textContent = '已连接';
-                    toggleResButtons(true);
+                    resSerialConnected = true;
+                    state.resistance_port = port;
+                    document.getElementById('res-title-status').textContent = '串口已连接';
+                    document.getElementById('btn-res-serial-connect').textContent = '断开';
+                    document.getElementById('res-port').disabled = true;
+                    // 加载设备列表
+                    await resLoadDevices();
+                } else {
+                    alert('连接失败: ' + data.message);
                 }
             } catch (e) {
                 console.error('连接失败', e);
             }
         }
 
-        async function resDisconnect() {
+        async function resSerialDisconnect() {
             try {
                 const res = await fetch('/api/res/disconnect', {
                     method: 'POST'
                 });
                 const data = await res.json();
                 if (data.success) {
-                    resConnected = false;
+                    resSerialConnected = false;
+                    state.resistance_port = null;
                     document.getElementById('res-title-status').textContent = '';
-                    toggleResButtons(false);
+                    document.getElementById('btn-res-serial-connect').textContent = '连接';
+                    document.getElementById('res-port').disabled = false;
+                    // 清空设备列表
+                    devices = [];
+                    renderDevices();
                 }
             } catch (e) {
                 console.error('断开失败', e);
@@ -550,87 +822,444 @@
         }
 
         function resPortChanged() {
-            // 切换串口时更新连接按钮状态
             const port = document.getElementById('res-port').value;
-            document.getElementById('btn-res-connect').disabled = !port || resConnected;
+            document.getElementById('btn-res-serial-connect').disabled = !port || resSerialConnected;
         }
 
-        async function resToggleConnect() {
-            if (resConnected) {
-                await resDisconnect();
-            } else {
-                await resConnect();
-            }
-        }
-
-        function toggleResButtons(connected) {
-            document.getElementById('btn-res-connect').textContent = connected ? '断开' : '连接';
-            document.getElementById('res-port').disabled = connected;
-            document.getElementById('btn-res-short').disabled = !connected;
-            document.getElementById('btn-res-unshort').disabled = !connected;
-        }
-
-        async function resAction(action) {
-            if (!resConnected) {
+        // 加载设备列表
+        async function resLoadDevices() {
+            if (!resSerialConnected) {
+                document.getElementById('device-loading').textContent = '请先连接串口';
                 return;
             }
 
             try {
-                const res = await fetch('/api/res/action', {
+                const res = await fetch('/api/res/devices');
+                const data = await res.json();
+                devices = data.devices || [];
+                renderDevices();
+            } catch (e) {
+                console.error('加载设备列表失败', e);
+            }
+        }
+
+        // 渲染设备列表
+        function renderDevices() {
+            const grid = document.getElementById('device-grid');
+
+            if (devices.length === 0) {
+                grid.innerHTML = '<div class="loading">暂无设备，请添加设备</div>';
+                return;
+            }
+
+            grid.innerHTML = '';
+            devices.forEach((device, index) => {
+                const card = document.createElement('div');
+                card.className = 'device-card' + (selectedDevices.has(device.sn) ? ' selected' : '');
+                card.dataset.sn = device.sn;
+                card.draggable = true;
+                card.dataset.index = index;
+                card.style.cursor = 'move';
+
+                card.ondragstart = function(e) {
+                    e.dataTransfer.setData('text/plain', index);
+                    card.style.opacity = '0.5';
+                };
+
+                card.ondragend = function() {
+                    card.style.opacity = '1';
+                };
+
+                card.ondragover = function(e) {
+                    e.preventDefault();
+                    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                    if (fromIndex !== index) {
+                        card.style.transform = 'scale(1.02)';
+                        card.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.4)';
+                        card.style.borderColor = '#667eea';
+                    }
+                };
+
+                card.ondragleave = function() {
+                    card.style.transform = '';
+                    card.style.boxShadow = '';
+                    card.style.borderColor = '';
+                };
+
+                card.ondrop = function(e) {
+                    e.preventDefault();
+                    card.style.transform = '';
+                    card.style.boxShadow = '';
+                    card.style.borderColor = '';
+                    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                    const toIndex = index;
+                    if (fromIndex !== toIndex) {
+                        // 交换位置
+                        const movedDevice = devices.splice(fromIndex, 1)[0];
+                        devices.splice(toIndex, 0, movedDevice);
+                        renderDevices();
+                    }
+                };
+
+                card.onclick = function(e) {
+                    if (e.target.type !== 'checkbox' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') {
+                        toggleDeviceSelect(device.sn);
+                    }
+                };
+                card.oncontextmenu = function(e) {
+                    e.preventDefault();
+                    showContextMenu(e, device.sn);
+                };
+
+                card.innerHTML = `
+                    <div class="device-card-header">
+                        <input type="checkbox" ${selectedDevices.has(device.sn) ? 'checked' : ''}
+                               onclick="event.stopPropagation(); toggleDeviceSelect('${device.sn}')">
+                        <span class="device-card-name">${device.name}</span>
+                    </div>
+                    <div class="device-card-sn">SN: ${device.sn}</div>
+                    <div class="device-card-value">
+                        <span id="res-display-${device.sn}">${device.current_resistance || '--'}</span>
+                    </div>
+                    <div class="device-card-actions" style="flex-direction: column;">
+                        <div style="display:flex;gap:5px;align-items:center;">
+                            <input type="number" id="res-input-${device.sn}" placeholder="电阻值(Ω)" style="flex:1;padding:4px;font-size:12px;" onclick="event.stopPropagation()">
+                            <button class="btn btn-primary" onclick="event.stopPropagation(); resSetDeviceValue('${device.sn}', 'value')" style="padding:4px 8px;font-size:11px;">设置</button>
+                        </div>
+                        <div style="display:flex;gap:5px;margin-top:5px;align-items:center;">
+                            <input type="number" id="res-temp-${device.sn}" placeholder="温度(°C)" style="flex:1;padding:4px;font-size:12px;" onclick="event.stopPropagation()">
+                            <button class="btn btn-secondary" onclick="event.stopPropagation(); resSetDeviceValue('${device.sn}', 'temp')" style="padding:4px 8px;font-size:11px;">设置</button>
+                        </div>
+                    </div>
+                `;
+
+                grid.appendChild(card);
+            });
+        }
+
+        // 切换设备选中状态
+        function toggleDeviceSelect(sn) {
+            if (selectedDevices.has(sn)) {
+                selectedDevices.delete(sn);
+            } else {
+                selectedDevices.add(sn);
+            }
+            renderDevices();
+        }
+
+        // 全选
+        function resSelectAll() {
+            devices.forEach(d => selectedDevices.add(d.sn));
+            renderDevices();
+        }
+
+        // 取消全选
+        function resDeselectAll() {
+            selectedDevices.clear();
+            renderDevices();
+        }
+
+        // 添加设备
+        async function resAddDevice() {
+            const name = document.getElementById('res-device-name').value.trim() || '未命名';
+            const sn = document.getElementById('res-device-sn').value.trim();
+
+            if (!sn) {
+                alert('请输入 SN 码');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/res/devices', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({action: action})
+                    body: JSON.stringify({name: name, sn: sn})
                 });
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('res-device-name').value = '';
+                    document.getElementById('res-device-sn').value = '';
+                    await resLoadDevices();
+                } else {
+                    alert(data.message);
+                }
+            } catch (e) {
+                console.error('添加设备失败', e);
+            }
+        }
+
+        // 批量设备操作
+        async function resDeviceAction(action) {
+            if (!resSerialConnected) {
+                alert('请先连接串口');
+                return;
+            }
+
+            const sns = Array.from(selectedDevices);
+            if (sns.length === 0) {
+                alert('请先选择设备');
+                return;
+            }
+
+            try {
+                await fetch('/api/res/device_action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({action: action, sns: sns})
+                });
+                // 刷新设备列表
+                await resLoadDevices();
             } catch (e) {
                 console.error('操作失败', e);
             }
         }
 
-        async function resSetValue() {
-            if (!resConnected) {
+        // 删除选中的设备
+        async function resDeleteSelected() {
+            const sns = Array.from(selectedDevices);
+            if (sns.length === 0) {
+                alert('请先选择要删除的设备');
                 return;
             }
 
-            const value = document.getElementById('res-value').value;
-            if (!value) {
+            if (!confirm(`确定要删除选中的 ${sns.length} 个设备吗？`)) {
                 return;
             }
 
+            for (const sn of sns) {
+                try {
+                    await fetch(`/api/res/devices/${sn}`, {method: 'DELETE'});
+                } catch (e) {
+                    console.error(`删除设备 ${sn} 失败`, e);
+                }
+            }
+
+            selectedDevices.clear();
+            await resLoadDevices();
+        }
+
+        // 单个设备设置电阻值
+        // 设置设备电阻值或温度
+        async function resSetDeviceValue(sn, type) {
+            let value;
+            let displayText;
             try {
-                await fetch('/api/res/action', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({action: 'set_value', value: value})
-                });
-            } catch (e) {
-                console.error('设置电阻值失败', e);
+                if (type === 'value') {
+                    const input = document.getElementById(`res-input-${sn}`);
+                    value = input.value;
+                    if (!value) return;
+                    await fetch('/api/res/device_value', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({sn: sn, value: value})
+                    });
+                    displayText = value + 'Ω';
+                } else {
+                    const input = document.getElementById(`res-temp-${sn}`);
+                    value = input.value;
+                    if (!value) return;
+                    await fetch('/api/res/device_temp', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({sn: sn, temperature: parseFloat(value)})
+                    });
+                    displayText = value + '°C';
+                }
+
+                // 获取设备名称
+                const device = devices.find(d => d.sn === sn);
+                const deviceName = device ? device.name : sn;
+
+                // 更新卡片内显示
+                const displayEl = document.getElementById(`res-display-${sn}`);
+                if (displayEl) {
+                    displayEl.textContent = displayText;
+                }
+        // 清除日志
+        function clearResLog() {
+            const logEl = document.getElementById('res-log');
+            if (logEl) {
+                logEl.innerHTML = '<div style="color: #718096;">日志记录...</div>';
             }
         }
 
-        async function resSetByTemperature() {
-            if (!resConnected) {
-                return;
+        // 追加到日志区域
+                const logEl = document.getElementById('res-log');
+                if (logEl) {
+                    const time = new Date().toLocaleTimeString();
+                    const line = document.createElement('div');
+                    line.textContent = `[${time}] ${deviceName}: ${displayText}`;
+                    line.style.marginTop = '3px';
+                    logEl.appendChild(line);
+                    // 滚动到底部
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
+                await resLoadDevices();
+            } catch (e) {
+                console.error('设置失败', e);
             }
+        }
 
-            const temperature = document.getElementById('res-temperature').value;
-            if (!temperature) {
+        async function resSetSingleValue(sn) {
+            const card = document.querySelector(`.device-card[data-sn="${sn}"]`);
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.placeholder = '电阻值 (Ω)';
+            input.style.width = '80px';
+            input.style.padding = '5px';
+            input.style.marginRight = '5px';
+
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary';
+            btn.style.padding = '5px 10px';
+            btn.style.fontSize = '12px';
+            btn.textContent = '确定';
+
+            const actionsDiv = card.querySelector('.device-card-actions');
+            actionsDiv.innerHTML = '';
+            actionsDiv.appendChild(input);
+            actionsDiv.appendChild(btn);
+
+            btn.onclick = async function() {
+                const value = input.value;
+                if (!value) return;
+
+                try {
+                    await fetch('/api/res/device_value', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({sn: sn, value: value})
+                    });
+                    await resLoadDevices();
+                } catch (e) {
+                    console.error('设置电阻值失败', e);
+                }
+            };
+
+            input.onkeypress = function(e) {
+                if (e.key === 'Enter') {
+                    btn.click();
+                }
+            };
+            input.focus();
+        }
+
+        // 单个设备按温度设置
+        async function resSetSingleTemp(sn) {
+            const card = document.querySelector(`.device-card[data-sn="${sn}"]`);
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.placeholder = '温度 (°C)';
+            input.style.width = '80px';
+            input.style.padding = '5px';
+            input.style.marginRight = '5px';
+
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary';
+            btn.style.padding = '5px 10px';
+            btn.style.fontSize = '12px';
+            btn.textContent = '确定';
+
+            const actionsDiv = card.querySelector('.device-card-actions');
+            actionsDiv.innerHTML = '';
+            actionsDiv.appendChild(input);
+            actionsDiv.appendChild(btn);
+
+            btn.onclick = async function() {
+                const temp = input.value;
+                if (!temp) return;
+
+                try {
+                    await fetch('/api/res/device_temp', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({sn: sn, temperature: parseFloat(temp)})
+                    });
+                    await resLoadDevices();
+                } catch (e) {
+                    console.error('按温度设置失败', e);
+                }
+            };
+
+            input.onkeypress = function(e) {
+                if (e.key === 'Enter') {
+                    btn.click();
+                }
+            };
+            input.focus();
+        }
+
+        // 显示右键菜单
+        function showContextMenu(e, sn) {
+            e.preventDefault();
+            contextMenuSN = sn;
+            const menu = document.getElementById('context-menu');
+            menu.style.display = 'block';
+            menu.style.left = e.clientX + 'px';
+            menu.style.top = e.clientY + 'px';
+        }
+
+        // 从菜单重命名设备
+        function resRenameDeviceFromMenu() {
+            if (!contextMenuSN) return;
+
+            const device = devices.find(d => d.sn === contextMenuSN);
+            if (!device) return;
+
+            document.getElementById('rename-input').value = device.name;
+            document.getElementById('rename-modal').style.display = 'flex';
+            document.getElementById('rename-input').focus();
+
+            document.getElementById('context-menu').style.display = 'none';
+        }
+
+        // 从菜单删除设备
+        async function resDeleteDeviceFromMenu() {
+            if (!contextMenuSN) return;
+
+            if (!confirm('确定要删除这个设备吗？')) {
+                document.getElementById('context-menu').style.display = 'none';
                 return;
             }
 
             try {
-                const res = await fetch('/api/res/set_by_temperature', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({temperature: parseFloat(temperature)})
-                });
-                const data = await res.json();
-                if (data.success) {
-                    // 更新电阻值显示
-                    document.getElementById('res-value').value = data.resistance;
-                }
+                await fetch(`/api/res/devices/${contextMenuSN}`, {method: 'DELETE'});
+                selectedDevices.delete(contextMenuSN);
+                await resLoadDevices();
             } catch (e) {
-                console.error('按温度设置电阻失败', e);
+                console.error('删除设备失败', e);
             }
+
+            document.getElementById('context-menu').style.display = 'none';
+        }
+
+        // 关闭重命名模态框
+        function closeRenameModal() {
+            document.getElementById('rename-modal').style.display = 'none';
+            contextMenuSN = null;
+        }
+
+        // 保存重命名
+        async function saveRename() {
+            const newName = document.getElementById('rename-input').value.trim();
+            if (!newName || !contextMenuSN) {
+                closeRenameModal();
+                return;
+            }
+
+            try {
+                await fetch(`/api/res/devices/${contextMenuSN}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: newName})
+                });
+                await resLoadDevices();
+            } catch (e) {
+                console.error('重命名失败', e);
+            }
+
+            closeRenameModal();
         }
 
         // ===== 电源控制 =====
@@ -663,6 +1292,7 @@
                 const data = await res.json();
                 if (data.success) {
                     powerConnected = true;
+                    state.power_address = address;
                     document.getElementById('power-title-status').textContent = '已连接';
                     togglePowerButtons(true);
                     startPowerAutoRefresh();
@@ -680,6 +1310,7 @@
                 const data = await res.json();
                 if (data.success) {
                     powerConnected = false;
+                    state.power_address = null;
                     document.getElementById('power-title-status').textContent = '';
                     togglePowerButtons(false);
                     stopPowerAutoRefresh();
@@ -791,9 +1422,16 @@
                 const data = await res.json();
                 if (data.success) {
                     scopeConnected = true;
+                    state.scope_serial = serial;
                     document.getElementById('scope-title-status').textContent = '已连接';
                     toggleScopeButtons(true);
-                    // 获取通道状态并同步复选框
+
+                    // 锁定示波器
+                    await fetch('/api/scope/lock', { method: 'POST' });
+                    scopeLocked = true;
+                    document.getElementById('btn-scope-lock').textContent = '解锁';
+
+                    // 获取通道状态并同步
                     scopeSyncChannelState();
                     // 启动自动刷新
                     startAutoRefresh();
@@ -811,6 +1449,7 @@
                 const data = await res.json();
                 if (data.success) {
                     scopeConnected = false;
+                    state.scope_serial = null;
                     document.getElementById('scope-title-status').textContent = '';
                     stopAutoRefresh();
                     toggleScopeButtons(false);
@@ -872,14 +1511,73 @@
                 const data = await res.json();
                 if (data.channels) {
                     for (let i = 1; i <= 4; i++) {
-                        const checkbox = document.getElementById(`scope-ch${i}-enable`);
-                        if (checkbox && data.channels[`ch${i}`] !== undefined) {
-                            checkbox.checked = data.channels[`ch${i}`];
-                        }
+                        const enabled = data.channels[`ch${i}`];
+                        scopeChannelStates[i] = enabled || false;
+                        updateChannelStyle(i, scopeChannelStates[i]);
                     }
                 }
+                // 检查是否需要启动自动刷新
+                checkAllChannelsClosed();
             } catch (e) {
                 console.error('获取通道状态失败', e);
+            }
+        }
+
+        // 更新通道样式
+        function updateChannelStyle(channel, enabled) {
+            const el = document.getElementById(`scope-ch${channel}`);
+            const labelEl = el.querySelector('.ch-label');
+            if (enabled) {
+                el.classList.remove('disabled');
+                if (labelEl) {
+                    labelEl.style.color = '#333';
+                }
+            } else {
+                el.classList.add('disabled');
+                // 关闭通道时清除数值显示
+                const valueEl = el.querySelector('.ch-value');
+                if (valueEl) {
+                    valueEl.textContent = '--';
+                }
+                // 变灰通道号
+                if (labelEl) {
+                    labelEl.style.color = '#999';
+                }
+            }
+        }
+
+        // 点击通道切换开关
+        async function scopeToggleChannel(channel) {
+            if (!scopeConnected) {
+                return;
+            }
+
+            // 切换状态
+            const newState = !scopeChannelStates[channel];
+            scopeChannelStates[channel] = newState;
+            updateChannelStyle(channel, newState);
+
+            try {
+                await fetch('/api/scope/channel', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({channel: channel, enable: newState})
+                });
+
+                // 检查是否所有通道都关闭
+                checkAllChannelsClosed();
+            } catch (e) {
+                console.error('设置通道开关失败', e);
+            }
+        }
+
+        // 检查是否所有通道都关闭
+        function checkAllChannelsClosed() {
+            const allClosed = !Object.values(scopeChannelStates).some(v => v);
+            if (allClosed) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
             }
         }
 

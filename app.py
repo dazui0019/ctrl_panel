@@ -40,12 +40,52 @@ class DeviceState:
 state = DeviceState()
 
 # ========== 电阻控制模块 ==========
+class ResistanceDevice:
+    """单个电阻设备"""
+    def __init__(self, sn, name="未命名"):
+        self.sn = sn
+        self.name = name
+        self.current_resistance = None
+        self.connected = False
+
+
 class ResistanceController:
-    """电阻控制器"""
+    """电阻控制器 - 支持多设备 RS485"""
     def __init__(self):
         self.tester = None
         self.port = None
+        self.baudrate = 9600
         self.connected = False
+        self.devices = {}  # {sn: ResistanceDevice}
+        self.config_file = os.path.join(SCRIPT_DIR, 'res_ctrl', 'devices_config.json')
+
+        # 加载保存的设备
+        self.load_devices()
+
+    def load_devices(self):
+        """从 JSON 文件加载设备配置"""
+        if not os.path.exists(self.config_file):
+            return
+
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                saved_devices = json.load(f)
+            for sn, info in saved_devices.items():
+                device = ResistanceDevice(sn, info.get('name', '未命名'))
+                self.devices[sn] = device
+        except Exception as e:
+            print(f"加载设备配置失败: {e}")
+
+    def save_devices(self):
+        """保存设备配置到 JSON 文件"""
+        try:
+            devices_data = {}
+            for sn, device in self.devices.items():
+                devices_data[sn] = {'name': device.name}
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(devices_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存设备配置失败: {e}")
 
     def list_ports(self):
         """列出可用串口"""
@@ -59,6 +99,7 @@ class ResistanceController:
             import serial
             self.tester = serial.Serial(port, baudrate, timeout=1)
             self.port = port
+            self.baudrate = baudrate
             self.connected = True
             state.resistance_port = port
             return True, "连接成功"
@@ -70,37 +111,49 @@ class ResistanceController:
         if self.tester and self.tester.is_open:
             self.tester.close()
         self.connected = False
+        # 重置所有设备状态
+        for device in self.devices.values():
+            device.connected = False
 
-    def send_command(self, cmd):
-        """发送AT指令"""
+    def _format_command(self, cmd, sn=None):
+        """格式化指令，支持 RS485 SN 码"""
+        if sn:
+            if cmd.startswith("AT+"):
+                base = cmd.replace("\r\n", "").replace("\n", "")
+                return f"AT+{base[3:]}@{sn}\r\n"
+        return cmd
+
+    def send_command(self, cmd, sn=None):
+        """发送 AT 指令，可选指定 SN 码"""
         if not self.tester or not self.tester.is_open:
             return False, "串口未连接"
 
         try:
-            self.tester.write((cmd + "\r\n").encode())
+            formatted_cmd = self._format_command(cmd, sn)
+            self.tester.write(formatted_cmd.encode())
             time.sleep(0.3)
             response = self.tester.read_all().decode(errors='ignore')
             return True, response.strip()
         except Exception as e:
             return False, str(e)
 
-    def set_connect(self):
+    def set_connect(self, sn=None):
         """连接电阻"""
-        return self.send_command("AT+RES.CONNECT")
+        return self.send_command("AT+RES.CONNECT", sn)
 
-    def set_disconnect(self):
+    def set_disconnect(self, sn=None):
         """断开电阻"""
-        return self.send_command("AT+RES.DISCONNECT")
+        return self.send_command("AT+RES.DISCONNECT", sn)
 
-    def set_short(self):
+    def set_short(self, sn=None):
         """短路电阻"""
-        return self.send_command("AT+RES.SHORT")
+        return self.send_command("AT+RES.SHORT", sn)
 
-    def set_unshort(self):
+    def set_unshort(self, sn=None):
         """取消短路"""
-        return self.send_command("AT+RES.UNSHORTEN")
+        return self.send_command("AT+RES.UNSHORTEN", sn)
 
-    def set_value(self, value):
+    def set_value(self, value, sn=None):
         """设置自定义电阻值"""
         if not self.tester or not self.tester.is_open:
             return False, "串口未连接"
@@ -111,17 +164,21 @@ class ResistanceController:
                 return False, "电阻值超出范围 (0-7MΩ)"
 
             # 先连接
-            self.send_command("AT+RES.CONNECT")
+            self.send_command("AT+RES.CONNECT", sn)
             time.sleep(0.2)
             # 设置值
-            result, msg = self.send_command(f"AT+RES.SP={value}")
+            result, msg = self.send_command(f"AT+RES.SP={value}", sn)
             if result:
                 state.resistance_value = value
+                # 更新设备状态
+                if sn and sn in self.devices:
+                    self.devices[sn].current_resistance = f"{int(value)}Ω"
+                    self.devices[sn].connected = True
             return result, msg
         except ValueError:
             return False, "无效的电阻值"
 
-    def set_by_temperature(self, temperature):
+    def set_by_temperature(self, temperature, sn=None):
         """通过温度设置电阻值"""
         # 根据温度查找电阻值
         resistance = ntc_table.get_resistance(temperature)
@@ -129,7 +186,7 @@ class ResistanceController:
             return False, "无法根据温度查找电阻值"
 
         # 设置电阻值
-        return self.set_value(resistance)
+        return self.set_value(resistance, sn)
 
 
 res_controller = ResistanceController()
@@ -465,21 +522,46 @@ def res_action():
     data = request.json
     action = data.get('action')
     value = data.get('value')
+    sn = data.get('sn')  # SN 码参数，支持多设备
 
     if action == 'connect':
-        success, msg = res_controller.set_connect()
+        success, msg = res_controller.set_connect(sn)
     elif action == 'disconnect':
-        success, msg = res_controller.set_disconnect()
+        success, msg = res_controller.set_disconnect(sn)
     elif action == 'short':
-        success, msg = res_controller.set_short()
+        success, msg = res_controller.set_short(sn)
     elif action == 'unshort':
-        success, msg = res_controller.set_unshort()
+        success, msg = res_controller.set_unshort(sn)
     elif action == 'set_value' and value:
-        success, msg = res_controller.set_value(value)
+        success, msg = res_controller.set_value(value, sn)
     else:
         success, msg = False, "未知操作"
 
     return jsonify({"success": success, "message": msg})
+
+
+@app.route('/api/res/device_action', methods=['POST'])
+def res_device_action():
+    """对多个设备执行操作"""
+    data = request.json
+    action = data.get('action')
+    sns = data.get('sns', [])  # 设备 SN 列表
+
+    results = []
+    for sn in sns:
+        if action == 'connect':
+            success, msg = res_controller.set_connect(sn)
+        elif action == 'disconnect':
+            success, msg = res_controller.set_disconnect(sn)
+        elif action == 'short':
+            success, msg = res_controller.set_short(sn)
+        elif action == 'unshort':
+            success, msg = res_controller.set_unshort(sn)
+        else:
+            success, msg = False, "未知操作"
+        results.append({"sn": sn, "success": success, "message": msg})
+
+    return jsonify({"results": results})
 
 
 @app.route('/api/res/set_by_temperature', methods=['POST'])
@@ -487,6 +569,7 @@ def res_set_by_temperature():
     """通过温度设置电阻"""
     data = request.json
     temperature = data.get('temperature')
+    sn = data.get('sn')  # SN 码参数
 
     if temperature is None:
         return jsonify({"success": False, "message": "请提供温度值"})
@@ -505,7 +588,134 @@ def res_set_by_temperature():
         return jsonify({"success": False, "message": "无法查找对应电阻值"})
 
     # 设置电阻
-    success, msg = res_controller.set_by_temperature(temperature)
+    success, msg = res_controller.set_by_temperature(temperature, sn)
+
+    return jsonify({
+        "success": success,
+        "message": msg,
+        "temperature": temperature,
+        "resistance": resistance
+    })
+
+
+# ----- 设备管理 API -----
+@app.route('/api/res/devices', methods=['GET'])
+def res_get_devices():
+    """获取设备列表"""
+    devices = []
+    for sn, device in res_controller.devices.items():
+        devices.append({
+            "sn": sn,
+            "name": device.name,
+            "current_resistance": device.current_resistance,
+            "connected": device.connected
+        })
+    return jsonify({"devices": devices})
+
+
+@app.route('/api/res/devices', methods=['POST'])
+def res_add_device():
+    """添加设备"""
+    data = request.json
+    name = data.get('name', '未命名')
+    sn = data.get('sn')
+
+    if not sn:
+        return jsonify({"success": False, "message": "请提供 SN 码"})
+
+    if sn in res_controller.devices:
+        return jsonify({"success": False, "message": f"设备 {sn} 已存在"})
+
+    # 创建设备
+    device = ResistanceDevice(sn, name)
+    res_controller.devices[sn] = device
+    res_controller.save_devices()
+
+    return jsonify({"success": True, "sn": sn, "name": name})
+
+
+@app.route('/api/res/devices/<sn>', methods=['DELETE'])
+def res_delete_device(sn):
+    """删除设备"""
+    if sn not in res_controller.devices:
+        return jsonify({"success": False, "message": f"设备 {sn} 不存在"})
+
+    name = res_controller.devices[sn].name
+    del res_controller.devices[sn]
+    res_controller.save_devices()
+
+    return jsonify({"success": True, "message": f"已删除设备 {name} ({sn})"})
+
+
+@app.route('/api/res/devices/<sn>', methods=['PUT'])
+def res_rename_device(sn):
+    """重命名设备"""
+    data = request.json
+    new_name = data.get('name')
+
+    if sn not in res_controller.devices:
+        return jsonify({"success": False, "message": f"设备 {sn} 不存在"})
+
+    if not new_name:
+        return jsonify({"success": False, "message": "请提供新名称"})
+
+    res_controller.devices[sn].name = new_name
+    res_controller.save_devices()
+
+    return jsonify({"success": True, "sn": sn, "name": new_name})
+
+
+@app.route('/api/res/device_value', methods=['POST'])
+def res_set_device_value():
+    """设置指定设备的电阻值"""
+    data = request.json
+    sn = data.get('sn')
+    value = data.get('value')
+
+    if not sn:
+        return jsonify({"success": False, "message": "请提供 SN 码"})
+
+    if sn not in res_controller.devices:
+        return jsonify({"success": False, "message": f"设备 {sn} 不存在"})
+
+    success, msg = res_controller.set_value(value, sn)
+
+    if success and sn in res_controller.devices:
+        res_controller.devices[sn].current_resistance = f"{int(float(value))}Ω"
+
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route('/api/res/device_temp', methods=['POST'])
+def res_set_device_temp():
+    """通过温度设置指定设备的电阻值"""
+    data = request.json
+    sn = data.get('sn')
+    temperature = data.get('temperature')
+
+    if not sn:
+        return jsonify({"success": False, "message": "请提供 SN 码"})
+
+    if sn not in res_controller.devices:
+        return jsonify({"success": False, "message": f"设备 {sn} 不存在"})
+
+    if temperature is None:
+        return jsonify({"success": False, "message": "请提供温度值"})
+
+    try:
+        temperature = float(temperature)
+    except ValueError:
+        return jsonify({"success": False, "message": "无效的温度值"})
+
+    # 获取对应的电阻值
+    resistance = ntc_table.get_resistance(temperature)
+    if resistance is None:
+        return jsonify({"success": False, "message": "无法查找对应电阻值"})
+
+    success, msg = res_controller.set_value(resistance, sn)
+
+    if success and sn in res_controller.devices:
+        res_controller.devices[sn].current_resistance = f"{resistance}Ω"
 
     return jsonify({
         "success": success,
