@@ -239,6 +239,19 @@
             color: rgba(102, 126, 234, 0.8);
         }
 
+        .scope-channel.disconnected {
+            background: #e2e8f0;
+            opacity: 0.6;
+        }
+
+        .scope-channel.disconnected .ch-value {
+            color: #999;
+        }
+
+        .scope-channel.disconnected::before {
+            color: #999;
+        }
+
         .scope-channel::before {
             content: attr(data-channel);
             position: absolute;
@@ -303,6 +316,7 @@
             text-align: center;
             padding: 20px;
             color: #718096;
+            grid-column: 1 / -1;
         }
 
         /* 多设备管理样式 */
@@ -538,7 +552,7 @@
                     <label>USB 序列号</label>
                     <div class="inline-form">
                         <input type="text" id="scope-serial" value="90Y701585" placeholder="USB 序列号" oninput="scopeSerialChanged()">
-                        <button class="btn btn-primary" onclick="scopeToggleConnect()" id="btn-scope-connect">连接</button>
+                        <button class="btn btn-primary" onclick="scopeToggleConnect()" id="btn-scope-connect" style="padding:8px 20px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;height:38px;min-width:70px;">连接</button>
                         <button class="btn btn-secondary" onclick="scopeToggleLock()" id="btn-scope-lock" style="display:none;">锁定</button>
                     </div>
                 </div>
@@ -583,7 +597,7 @@
                         <select id="power-address" onchange="powerAddressChanged()">
                             <option value="">请选择电源...</option>
                         </select>
-                        <button class="btn btn-primary" onclick="powerToggleConnect()" id="btn-power-connect">连接</button>
+                        <button class="btn btn-primary" onclick="powerToggleConnect()" id="btn-power-connect" style="padding:8px 20px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;height:38px;min-width:70px;">连接</button>
                     </div>
                 </div>
 
@@ -599,7 +613,7 @@
                         <label>电流 (A)</label>
                         <input type="number" id="power-current" step="0.1" value="20" style="width: 100px;">
                     </div>
-                    <button class="btn btn-primary" onclick="powerSetParams()">设置</button>
+                    <button class="btn btn-primary" onclick="powerSetParams()" style="padding:8px 20px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;height:38px;min-width:70px;">设置</button>
                 </div>
 
                 <div class="divider"></div>
@@ -836,7 +850,26 @@
             try {
                 const res = await fetch('/api/res/devices');
                 const data = await res.json();
-                devices = data.devices || [];
+                const newDevices = data.devices || [];
+
+                // 保持当前顺序，只更新数据
+                if (devices.length > 0 && newDevices.length > 0) {
+                    // 按当前顺序重新排列新数据
+                    const orderedDevices = [];
+                    for (const sn of devices.map(d => d.sn)) {
+                        const found = newDevices.find(d => d.sn === sn);
+                        if (found) orderedDevices.push(found);
+                    }
+                    // 添加新设备（可能新增的）
+                    for (const d of newDevices) {
+                        if (!orderedDevices.find(x => x.sn === d.sn)) {
+                            orderedDevices.push(d);
+                        }
+                    }
+                    devices = orderedDevices;
+                } else {
+                    devices = newDevices;
+                }
                 renderDevices();
             } catch (e) {
                 console.error('加载设备列表失败', e);
@@ -898,6 +931,8 @@
                         const movedDevice = devices.splice(fromIndex, 1)[0];
                         devices.splice(toIndex, 0, movedDevice);
                         renderDevices();
+                        // 保存顺序到后端
+                        saveDeviceOrder();
                     }
                 };
 
@@ -912,23 +947,21 @@
                 };
 
                 card.innerHTML = `
-                    <div class="device-card-header">
+                    <div class="device-card-header" style="position:relative;">
                         <input type="checkbox" ${selectedDevices.has(device.sn) ? 'checked' : ''}
                                onclick="event.stopPropagation(); toggleDeviceSelect('${device.sn}')">
                         <span class="device-card-name">${device.name}</span>
+                        <div id="res-display-${device.sn}" style="position:absolute;top:0;right:0;font-size:14px;font-weight:600;color:#667eea;">${device.current_resistance || '--'}</div>
                     </div>
                     <div class="device-card-sn">SN: ${device.sn}</div>
-                    <div class="device-card-value">
-                        <span id="res-display-${device.sn}">${device.current_resistance || '--'}</span>
-                    </div>
-                    <div class="device-card-actions" style="flex-direction: column;">
-                        <div style="display:flex;gap:5px;align-items:center;">
-                            <input type="number" id="res-input-${device.sn}" placeholder="电阻值(Ω)" style="flex:1;padding:4px;font-size:12px;" onclick="event.stopPropagation()">
-                            <button class="btn btn-primary" onclick="event.stopPropagation(); resSetDeviceValue('${device.sn}', 'value')" style="padding:4px 8px;font-size:11px;">设置</button>
+                    <div class="device-card-actions" style="flex-direction: column;gap:10px;">
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <span style="font-size:11px;color:#666;min-width:18px;">R:</span>
+                            <input type="number" id="res-input-${device.sn}" placeholder="Ω" style="flex:1;padding:8px 10px;font-size:14px;border:1px solid #ddd;border-radius:4px;outline:none;background:#fafafa;" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter')resSetDeviceValue('${device.sn}', 'value')">
                         </div>
-                        <div style="display:flex;gap:5px;margin-top:5px;align-items:center;">
-                            <input type="number" id="res-temp-${device.sn}" placeholder="温度(°C)" style="flex:1;padding:4px;font-size:12px;" onclick="event.stopPropagation()">
-                            <button class="btn btn-secondary" onclick="event.stopPropagation(); resSetDeviceValue('${device.sn}', 'temp')" style="padding:4px 8px;font-size:11px;">设置</button>
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <span style="font-size:11px;color:#666;min-width:18px;">T:</span>
+                            <input type="number" id="res-temp-${device.sn}" placeholder="°C" style="flex:1;padding:8px 10px;font-size:14px;border:1px solid #ddd;border-radius:4px;outline:none;background:#fafafa;" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter')resSetDeviceValue('${device.sn}', 'temp')">
                         </div>
                     </div>
                 `;
@@ -1076,6 +1109,20 @@
                 if (displayEl) {
                     displayEl.textContent = displayText;
                 }
+        // 保存设备顺序到后端
+        async function saveDeviceOrder() {
+            const order = devices.map(d => d.sn);
+            try {
+                await fetch('/api/res/devices/order', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({order: order})
+                });
+            } catch (e) {
+                console.error('保存设备顺序失败', e);
+            }
+        }
+
         // 清除日志
         function clearResLog() {
             const logEl = document.getElementById('res-log');
@@ -1476,6 +1523,17 @@
             document.getElementById('btn-scope-connect').textContent = connected ? '断开' : '连接';
             document.getElementById('scope-serial').disabled = connected;
             document.getElementById('btn-scope-lock').style.display = connected ? 'inline-block' : 'none';
+            // 更新通道卡片颜色
+            for (let i = 1; i <= 4; i++) {
+                const ch = document.getElementById(`scope-ch${i}`);
+                if (ch) {
+                    if (connected) {
+                        ch.classList.remove('disconnected');
+                    } else {
+                        ch.classList.add('disconnected');
+                    }
+                }
+            }
         }
 
         let scopeLocked = true;  // 远程模式为锁定

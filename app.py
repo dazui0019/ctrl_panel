@@ -57,6 +57,7 @@ class ResistanceController:
         self.baudrate = 9600
         self.connected = False
         self.devices = {}  # {sn: ResistanceDevice}
+        self.devices_list = []  # 按顺序保存设备
         self.config_file = os.path.join(SCRIPT_DIR, 'res_ctrl', 'devices_config.json')
 
         # 加载保存的设备
@@ -70,18 +71,23 @@ class ResistanceController:
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 saved_devices = json.load(f)
-            for sn, info in saved_devices.items():
-                device = ResistanceDevice(sn, info.get('name', '未命名'))
+            # 按顺序加载
+            for item in saved_devices:
+                sn = item.get('sn')
+                name = item.get('name', '未命名')
+                device = ResistanceDevice(sn, name)
                 self.devices[sn] = device
+                self.devices_list.append(device)
         except Exception as e:
             print(f"加载设备配置失败: {e}")
 
     def save_devices(self):
         """保存设备配置到 JSON 文件"""
         try:
-            devices_data = {}
-            for sn, device in self.devices.items():
-                devices_data[sn] = {'name': device.name}
+            # 按顺序保存为列表
+            devices_data = []
+            for device in self.devices_list:
+                devices_data.append({'sn': device.sn, 'name': device.name})
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(devices_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -174,6 +180,12 @@ class ResistanceController:
                 if sn and sn in self.devices:
                     self.devices[sn].current_resistance = f"{int(value)}Ω"
                     self.devices[sn].connected = True
+                    # 更新列表中的设备
+                    for d in self.devices_list:
+                        if d.sn == sn:
+                            d.current_resistance = f"{int(value)}Ω"
+                            d.connected = True
+                            break
             return result, msg
         except ValueError:
             return False, "无效的电阻值"
@@ -603,9 +615,9 @@ def res_set_by_temperature():
 def res_get_devices():
     """获取设备列表"""
     devices = []
-    for sn, device in res_controller.devices.items():
+    for device in res_controller.devices_list:
         devices.append({
-            "sn": sn,
+            "sn": device.sn,
             "name": device.name,
             "current_resistance": device.current_resistance,
             "connected": device.connected
@@ -629,6 +641,7 @@ def res_add_device():
     # 创建设备
     device = ResistanceDevice(sn, name)
     res_controller.devices[sn] = device
+    res_controller.devices_list.append(device)
     res_controller.save_devices()
 
     return jsonify({"success": True, "sn": sn, "name": name})
@@ -642,9 +655,34 @@ def res_delete_device(sn):
 
     name = res_controller.devices[sn].name
     del res_controller.devices[sn]
+    # 从列表中移除
+    res_controller.devices_list = [d for d in res_controller.devices_list if d.sn != sn]
     res_controller.save_devices()
 
     return jsonify({"success": True, "message": f"已删除设备 {name} ({sn})"})
+
+
+@app.route('/api/res/devices/order', methods=['POST'])
+def res_update_device_order():
+    """更新设备顺序"""
+    data = request.json
+    order = data.get('order', [])
+
+    # 按新顺序重新排列
+    new_list = []
+    for sn in order:
+        if sn in res_controller.devices:
+            new_list.append(res_controller.devices[sn])
+
+    # 添加不在列表中的设备
+    for device in res_controller.devices_list:
+        if device not in new_list:
+            new_list.append(device)
+
+    res_controller.devices_list = new_list
+    res_controller.save_devices()
+
+    return jsonify({"success": True})
 
 
 @app.route('/api/res/devices/<sn>', methods=['PUT'])
