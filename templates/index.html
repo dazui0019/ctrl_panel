@@ -715,6 +715,8 @@
     <script>
         let scopeRefreshTimer = null;
         let powerRefreshTimer = null;
+        let resValueRefreshTimer = null;
+        let resValueRefreshInProgress = false;
         let scopeConnected = false;
         let scopeChannelStates = {1: false, 2: false, 3: false, 4: false};  // 通道开关状态
         let powerConnected = false;
@@ -806,6 +808,7 @@
                     document.getElementById('res-title-status').textContent = '串口已连接';
                     // 加载设备列表
                     await resLoadDevices();
+                    startResValueAutoRefresh();
                 }
 
                 // 电源
@@ -891,6 +894,7 @@
                     document.getElementById('res-port').disabled = true;
                     // 加载设备列表
                     await resLoadDevices();
+                    startResValueAutoRefresh();
                 } else {
                     alert('连接失败: ' + data.message);
                 }
@@ -911,6 +915,7 @@
                     document.getElementById('res-title-status').textContent = '';
                     document.getElementById('btn-res-serial-connect').textContent = '连接';
                     document.getElementById('res-port').disabled = false;
+                    stopResValueAutoRefresh();
                     // 清空设备列表
                     devices = [];
                     renderDevices();
@@ -959,6 +964,56 @@
             } catch (e) {
                 console.error('加载设备列表失败', e);
             }
+        }
+
+        async function resRefreshDeviceValues() {
+            if (!resSerialConnected || resValueRefreshInProgress) {
+                return;
+            }
+            if (devices.length === 0) {
+                return;
+            }
+
+            resValueRefreshInProgress = true;
+            try {
+                const res = await fetch('/api/res/device_values');
+                const data = await res.json();
+                if (!res.ok || !data.success || !Array.isArray(data.devices)) {
+                    return;
+                }
+
+                const latestBySn = new Map(data.devices.map(d => [d.sn, d]));
+                devices = devices.map(d => latestBySn.has(d.sn) ? {...d, ...latestBySn.get(d.sn)} : d);
+
+                for (const device of data.devices) {
+                    const displayREl = document.getElementById(`res-display-r-${device.sn}`);
+                    const displayTEl = document.getElementById(`res-display-t-${device.sn}`);
+                    if (displayREl) {
+                        displayREl.textContent = device.current_resistance || '--';
+                    }
+                    if (displayTEl) {
+                        displayTEl.textContent = `T: ${device.current_temperature_display || '--'}`;
+                    }
+                }
+            } catch (e) {
+                console.error('刷新电阻值失败', e);
+            } finally {
+                resValueRefreshInProgress = false;
+            }
+        }
+
+        function startResValueAutoRefresh() {
+            stopResValueAutoRefresh();
+            resRefreshDeviceValues();
+            resValueRefreshTimer = setInterval(resRefreshDeviceValues, 1000);
+        }
+
+        function stopResValueAutoRefresh() {
+            if (resValueRefreshTimer) {
+                clearInterval(resValueRefreshTimer);
+                resValueRefreshTimer = null;
+            }
+            resValueRefreshInProgress = false;
         }
 
         // 渲染设备列表
@@ -1036,7 +1091,10 @@
                         <input type="checkbox" ${selectedDevices.has(device.sn) ? 'checked' : ''}
                                onclick="event.stopPropagation(); toggleDeviceSelect('${device.sn}')">
                         <span class="device-card-name">${device.name}</span>
-                        <div id="res-display-${device.sn}" style="position:absolute;top:0;right:0;font-size:14px;font-weight:600;color:#667eea;">${device.current_resistance || '--'}</div>
+                        <div id="res-display-${device.sn}" style="position:absolute;top:0;right:0;text-align:right;line-height:1.2;">
+                            <div id="res-display-r-${device.sn}" style="font-size:14px;font-weight:600;color:#667eea;">${device.current_resistance || '--'}</div>
+                            <div id="res-display-t-${device.sn}" style="font-size:12px;color:#718096;">T: ${device.current_temperature_display || '--'}</div>
+                        </div>
                     </div>
                     <div class="device-card-sn">SN: ${device.sn}</div>
                     <div class="device-card-actions" style="flex-direction: column;gap:10px;">
@@ -1157,43 +1215,64 @@
             await resLoadDevices();
         }
 
-        // 单个设备设置电阻值
         // 设置设备电阻值或温度
         async function resSetDeviceValue(sn, type) {
             let value;
-            let displayText;
+            let data;
+
             try {
                 if (type === 'value') {
                     const input = document.getElementById(`res-input-${sn}`);
                     value = input.value;
                     if (!value) return;
-                    await fetch('/api/res/device_value', {
+
+                    const res = await fetch('/api/res/device_value', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({sn: sn, value: value})
                     });
-                    displayText = value + 'Ω';
+                    data = await res.json();
+                    if (!res.ok || !data.success) {
+                        throw new Error(data.message || '设置电阻值失败');
+                    }
                 } else {
                     const input = document.getElementById(`res-temp-${sn}`);
                     value = input.value;
                     if (!value) return;
-                    await fetch('/api/res/device_temp', {
+
+                    const res = await fetch('/api/res/device_temp', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({sn: sn, temperature: parseFloat(value)})
                     });
-                    displayText = value + '°C';
+                    data = await res.json();
+                    if (!res.ok || !data.success) {
+                        throw new Error(data.message || '按温度设置失败');
+                    }
                 }
 
-                // 获取设备名称
                 const device = devices.find(d => d.sn === sn);
                 const deviceName = device ? device.name : sn;
+                const resistanceText = data.current_resistance || '--';
+                const temperatureText = data.current_temperature_display || '--';
+                const logValueText = type === 'temp'
+                    ? `T=${temperatureText} (${resistanceText})`
+                    : `R=${resistanceText}`;
 
-                // 更新卡片内显示
-                const displayEl = document.getElementById(`res-display-${sn}`);
-                if (displayEl) {
-                    displayEl.textContent = displayText;
+                const logEl = document.getElementById('res-log');
+                if (logEl) {
+                    const time = new Date().toLocaleTimeString();
+                    const line = document.createElement('div');
+                    line.textContent = `[${time}] ${deviceName}: ${logValueText}`;
+                    line.style.marginTop = '3px';
+                    logEl.appendChild(line);
+                    logEl.scrollTop = logEl.scrollHeight;
                 }
+            } catch (e) {
+                console.error('设置失败', e);
+            }
+        }
+
         // 保存设备顺序到后端
         async function saveDeviceOrder() {
             const order = devices.map(d => d.sn);
@@ -1213,23 +1292,6 @@
             const logEl = document.getElementById('res-log');
             if (logEl) {
                 logEl.innerHTML = '<div style="color: #718096;">日志记录...</div>';
-            }
-        }
-
-        // 追加到日志区域
-                const logEl = document.getElementById('res-log');
-                if (logEl) {
-                    const time = new Date().toLocaleTimeString();
-                    const line = document.createElement('div');
-                    line.textContent = `[${time}] ${deviceName}: ${displayText}`;
-                    line.style.marginTop = '3px';
-                    logEl.appendChild(line);
-                    // 滚动到底部
-                    logEl.scrollTop = logEl.scrollHeight;
-                }
-                await resLoadDevices();
-            } catch (e) {
-                console.error('设置失败', e);
             }
         }
 

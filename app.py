@@ -8,6 +8,7 @@
 import sys
 import os
 import json
+import re
 import threading
 import time
 import subprocess
@@ -57,6 +58,7 @@ class ResistanceController:
         self.port = None
         self.baudrate = 9600
         self.connected = False
+        self.io_lock = threading.RLock()
         self.devices = {}  # {sn: ResistanceDevice}
         self.devices_list = []  # 按顺序保存设备
         self.config_file = os.path.join(SCRIPT_DIR, 'res_ctrl', 'devices_config.json')
@@ -130,16 +132,17 @@ class ResistanceController:
                 return f"AT+{base[3:]}@{sn}\r\n"
         return cmd
 
-    def send_command(self, cmd, sn=None):
+    def send_command(self, cmd, sn=None, wait_secs=0.3):
         """发送 AT 指令，可选指定 SN 码"""
         if not self.tester or not self.tester.is_open:
             return False, "串口未连接"
 
         try:
-            formatted_cmd = self._format_command(cmd, sn)
-            self.tester.write(formatted_cmd.encode())
-            time.sleep(0.3)
-            response = self.tester.read_all().decode(errors='ignore')
+            with self.io_lock:
+                formatted_cmd = self._format_command(cmd, sn)
+                self.tester.write(formatted_cmd.encode())
+                time.sleep(wait_secs)
+                response = self.tester.read_all().decode(errors='ignore')
             return True, response.strip()
         except Exception as e:
             return False, str(e)
@@ -170,11 +173,10 @@ class ResistanceController:
             if value < 0 or value > 7000000:
                 return False, "电阻值超出范围 (0-7MΩ)"
 
-            # 先连接
-            self.send_command("AT+RES.CONNECT", sn)
-            time.sleep(0.2)
-            # 设置值
-            result, msg = self.send_command(f"AT+RES.SP={value}", sn)
+            # 用同一把锁串行化“连接+设置”过程，避免与轮询并发交叉
+            with self.io_lock:
+                self.send_command("AT+RES.CONNECT", sn, wait_secs=0.2)
+                result, msg = self.send_command(f"AT+RES.SP={value}", sn, wait_secs=0.3)
             if result:
                 state.resistance_value = value
                 # 更新设备状态
@@ -200,6 +202,56 @@ class ResistanceController:
 
         # 设置电阻值
         return self.set_value(resistance, sn)
+
+    def _parse_resistance_from_response(self, response):
+        """从 AT+RES.SP? 响应中解析电阻值"""
+        if not response:
+            return None
+
+        text = str(response).replace("\r", "\n")
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+        # 优先匹配明确字段（如 RES.SP=1234）
+        explicit_patterns = [
+            r"RES\.SP\??\s*[:=]\s*([+-]?\d+(?:\.\d+)?)",
+            r"AT\+RES\.SP\??\s*[:=]\s*([+-]?\d+(?:\.\d+)?)",
+        ]
+        for line in lines:
+            upper_line = line.upper()
+            for pattern in explicit_patterns:
+                match = re.search(pattern, upper_line, flags=re.IGNORECASE)
+                if match:
+                    try:
+                        value = float(match.group(1))
+                        if 0 <= value <= 7000000:
+                            return value
+                    except ValueError:
+                        continue
+
+        # 其次匹配整行纯数值（可带单位）
+        for line in lines:
+            match = re.match(r"^([+-]?\d+(?:\.\d+)?)\s*(?:Ω|OHM)?$", line, flags=re.IGNORECASE)
+            if match:
+                try:
+                    value = float(match.group(1))
+                    if 0 <= value <= 7000000:
+                        return value
+                except ValueError:
+                    continue
+
+        return None
+
+    def get_value(self, sn=None):
+        """查询电阻当前设定值（AT+RES.SP?）"""
+        success, response = self.send_command("AT+RES.SP?", sn, wait_secs=0.3)
+        if not success:
+            return False, response, None
+
+        value = self._parse_resistance_from_response(response)
+        if value is None:
+            return False, f"无法解析返回值: {response}", None
+
+        return True, "查询成功", value
 
 
 res_controller = ResistanceController()
@@ -270,8 +322,119 @@ class NTCTable:
 
         return None
 
+    def get_temperature(self, resistance):
+        """根据电阻值反查温度（线性插值）"""
+        if not self.loaded:
+            self.load()
+
+        try:
+            resistance = float(resistance)
+        except (TypeError, ValueError):
+            return None
+
+        temps = sorted(self.table.keys())
+        if not temps:
+            return None
+
+        points = [(t, float(self.table[t])) for t in temps]
+        resistances = [r for _, r in points]
+        min_r = min(resistances)
+        max_r = max(resistances)
+
+        # 超出 NTC 表的电阻范围，直接视为无效
+        if resistance < min_r or resistance > max_r:
+            return None
+
+        # 精确匹配
+        for t, r in points:
+            if resistance == r:
+                if -40 <= t <= 150:
+                    return float(t)
+                return None
+
+        # 线性插值（兼容电阻随温度递减的区间）
+        temp = None
+        for i in range(len(points) - 1):
+            t1, r1 = points[i]
+            t2, r2 = points[i + 1]
+            low = min(r1, r2)
+            high = max(r1, r2)
+            if low <= resistance <= high and r1 != r2:
+                ratio = (resistance - r1) / (r2 - r1)
+                temp = t1 + (t2 - t1) * ratio
+                break
+
+        if temp is None:
+            return None
+
+        if temp < -40 or temp > 150:
+            return None
+
+        return round(temp, 1)
+
 
 ntc_table = NTCTable()
+
+
+def parse_resistance_ohm(value):
+    """将 '1000Ω' / 数值 解析为欧姆浮点数"""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip().upper().replace("OHM", "").replace("Ω", "").strip()
+    if not text:
+        return None
+
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def format_resistance_display(value):
+    """格式化电阻显示文本"""
+    ohm = parse_resistance_ohm(value)
+    if ohm is None:
+        return "--"
+
+    if float(ohm).is_integer():
+        return f"{int(ohm)}Ω"
+
+    return f"{ohm:.3f}".rstrip("0").rstrip(".") + "Ω"
+
+
+def format_temperature_display(temp):
+    """格式化温度显示文本"""
+    if temp is None:
+        return "--"
+
+    temp = float(temp)
+    if temp.is_integer():
+        return f"{int(temp)}℃"
+    return f"{temp:.1f}℃"
+
+
+def build_res_device_status(device):
+    """构建设备展示数据（含温度反查）"""
+    resistance_ohm = parse_resistance_ohm(device.current_resistance)
+    temperature = None
+    if resistance_ohm is not None:
+        temperature = ntc_table.get_temperature(resistance_ohm)
+
+    return {
+        "sn": device.sn,
+        "name": device.name,
+        "current_resistance": device.current_resistance,
+        "current_temperature": temperature,
+        "current_temperature_display": format_temperature_display(temperature),
+        "connected": device.connected
+    }
 
 
 # ========== 电源控制模块 ==========
@@ -736,13 +899,29 @@ def res_get_devices():
     """获取设备列表"""
     devices = []
     for device in res_controller.devices_list:
-        devices.append({
-            "sn": device.sn,
-            "name": device.name,
-            "current_resistance": device.current_resistance,
-            "connected": device.connected
-        })
+        devices.append(build_res_device_status(device))
     return jsonify({"devices": devices})
+
+
+@app.route('/api/res/device_values', methods=['GET'])
+def res_get_device_values():
+    """批量读取设备当前电阻值（AT+RES.SP?）"""
+    if not res_controller.connected:
+        return jsonify({"success": False, "message": "串口未连接"}), 400
+
+    result_devices = []
+    for device in res_controller.devices_list:
+        success, msg, value = res_controller.get_value(device.sn)
+        if success:
+            device.current_resistance = format_resistance_display(value)
+
+        status = build_res_device_status(device)
+        status["read_success"] = success
+        if not success:
+            status["read_message"] = msg
+        result_devices.append(status)
+
+    return jsonify({"success": True, "devices": result_devices})
 
 
 @app.route('/api/res/devices', methods=['POST'])
@@ -840,6 +1019,8 @@ def res_set_device_value():
 
     if success and sn in res_controller.devices:
         res_controller.devices[sn].current_resistance = f"{int(float(value))}Ω"
+        status = build_res_device_status(res_controller.devices[sn])
+        return jsonify({"success": True, "message": msg, **status})
 
     return jsonify({"success": success, "message": msg})
 
@@ -874,6 +1055,14 @@ def res_set_device_temp():
 
     if success and sn in res_controller.devices:
         res_controller.devices[sn].current_resistance = f"{resistance}Ω"
+        status = build_res_device_status(res_controller.devices[sn])
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "temperature": temperature,
+            "resistance": resistance,
+            **status
+        })
 
     return jsonify({
         "success": success,
