@@ -10,6 +10,7 @@ import os
 import json
 import threading
 import time
+import subprocess
 from flask import Flask, render_template, request, jsonify
 
 # 添加 scripts 目录到路径
@@ -366,6 +367,7 @@ class ScopeController:
     def __init__(self):
         self.tmctl = None
         self.device_id = None
+        self.io_lock = threading.Lock()
 
     def connect(self, serial_num="90Y701585"):
         """连接示波器"""
@@ -430,8 +432,9 @@ class ScopeController:
             return False, "示波器未连接"
 
         try:
-            cmd = f":CHANnel{channel}:DISPlay {'ON' if enable else 'OFF'}"
-            self.tmctl.Send(self.device_id, cmd)
+            with self.io_lock:
+                cmd = f":CHANnel{channel}:DISPlay {'ON' if enable else 'OFF'}"
+                self.tmctl.Send(self.device_id, cmd)
             return True, "设置成功"
         except Exception as e:
             return False, str(e)
@@ -442,9 +445,10 @@ class ScopeController:
             return None
 
         try:
-            cmd = f":CHANnel{channel}:DISPlay?"
-            self.tmctl.Send(self.device_id, cmd)
-            ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
+            with self.io_lock:
+                cmd = f":CHANnel{channel}:DISPlay?"
+                self.tmctl.Send(self.device_id, cmd)
+                ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
             buf_str = buf.strip().upper()
             return buf_str in ['1', 'ON']
         except Exception as e:
@@ -457,9 +461,10 @@ class ScopeController:
 
         try:
             # 查询
-            cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
-            self.tmctl.Send(self.device_id, cmd)
-            ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
+            with self.io_lock:
+                cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
+                self.tmctl.Send(self.device_id, cmd)
+                ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
 
             try:
                 # 清理响应字符串（去除换行符、空格等）
@@ -487,6 +492,121 @@ class ScopeController:
                 print(f"读取 CH{ch} 失败: {e}")
                 results[f"ch{ch}"] = None
         return results
+
+    def get_screenshot(self):
+        """获取示波器 PNG 截图数据"""
+        if self.device_id is None:
+            return False, "示波器未连接", None
+
+        with self.io_lock:
+            try:
+                # 截图传输较慢，临时延长超时
+                self.tmctl.SetTimeout(self.device_id, 300)
+                self.tmctl.Send(self.device_id, "*CLS")
+
+                # 暂停采集并等待完成
+                self.tmctl.Send(self.device_id, ":STOP")
+                self.tmctl.Send(self.device_id, "*OPC?")
+                self.tmctl.Receive(self.device_id, 1000)
+
+                # 触发 PNG 截图输出
+                self.tmctl.Send(self.device_id, ":IMAGe:FORMat PNG")
+                self.tmctl.Send(self.device_id, "*OPC?")
+                self.tmctl.Receive(self.device_id, 1000)
+                self.tmctl.Send(self.device_id, ":IMAGe:SEND?")
+
+                # 读取块头和二进制图像
+                ret, total_len = self.tmctl.ReceiveBlockHeader(self.device_id)
+                if ret != 0:
+                    return False, f"获取截图头失败 (Ret={ret})", None
+                if total_len <= 0:
+                    return False, "截图数据长度为 0", None
+
+                block_size = 4096
+                loop_count = int(total_len / block_size)
+                remainder = total_len % block_size
+                image_data = bytearray()
+
+                buf = bytearray(block_size)
+                for i in range(loop_count):
+                    ret, rlen, end = self.tmctl.ReceiveBlockData(self.device_id, buf, block_size)
+                    if ret != 0:
+                        return False, f"接收截图数据块失败 (块={i}, Ret={ret})", None
+                    if rlen > 0:
+                        image_data.extend(buf[:rlen])
+
+                if remainder > 0:
+                    req_size = remainder + 16
+                    buf_rem = bytearray(req_size)
+                    ret, rlen, end = self.tmctl.ReceiveBlockData(self.device_id, buf_rem, req_size)
+                    if ret != 0:
+                        return False, f"接收截图剩余数据失败 (Ret={ret})", None
+
+                    bytes_to_write = min(rlen, total_len - len(image_data))
+                    if bytes_to_write > 0:
+                        image_data.extend(buf_rem[:bytes_to_write])
+
+                if len(image_data) < total_len:
+                    return False, f"截图数据不完整 ({len(image_data)}/{total_len})", None
+
+                return True, "截图成功", bytes(image_data[:total_len])
+            except Exception as e:
+                return False, str(e), None
+            finally:
+                # 无论成功失败都尽量恢复采集和常规超时
+                try:
+                    self.tmctl.Send(self.device_id, ":STARt")
+                except Exception:
+                    pass
+                try:
+                    self.tmctl.SetTimeout(self.device_id, 30)
+                except Exception:
+                    pass
+
+    def save_screenshot(self):
+        """截图并保存到本地文件"""
+        success, msg, image_data = self.get_screenshot()
+        if not success:
+            return False, msg, None
+
+        try:
+            screenshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots')
+            os.makedirs(screenshot_dir, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filepath = os.path.join(screenshot_dir, f"DLM_{timestamp}.png")
+            with open(filepath, 'wb') as f:
+                f.write(image_data)
+            return True, "截图保存成功", filepath
+        except Exception as e:
+            return False, f"截图保存失败: {e}", None
+
+    def copy_image_to_clipboard(self, filepath):
+        """将本地图片复制到 Windows 剪贴板"""
+        if not filepath or not os.path.exists(filepath):
+            return False, "截图文件不存在"
+
+        path_ps = os.path.abspath(filepath).replace("'", "''")
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -AssemblyName System.Drawing; "
+            f"$img = [System.Drawing.Image]::FromFile('{path_ps}'); "
+            "try { [System.Windows.Forms.Clipboard]::SetImage($img) } "
+            "finally { $img.Dispose() }"
+        )
+
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "").strip()
+                return False, err or f"复制失败 (返回码 {result.returncode})"
+            return True, "已复制到剪贴板"
+        except Exception as e:
+            return False, str(e)
 
 
 scope_controller = ScopeController()
@@ -905,6 +1025,29 @@ def scope_get_mean():
     if results:
         return jsonify({"channels": results})
     return jsonify({"error": "读取失败"})
+
+
+@app.route('/api/scope/copy_screenshot', methods=['POST'])
+def scope_copy_screenshot():
+    """截图保存到本地并复制到剪贴板"""
+    success, msg, filepath = scope_controller.save_screenshot()
+    if not success:
+        status = 400 if msg == "示波器未连接" else 500
+        return jsonify({"success": False, "message": msg}), status
+
+    success, clip_msg = scope_controller.copy_image_to_clipboard(filepath)
+    if not success:
+        return jsonify({
+            "success": False,
+            "message": f"截图已保存，但复制失败: {clip_msg}",
+            "filepath": filepath
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "message": "截图已保存并复制到剪贴板",
+        "filepath": filepath
+    })
 
 
 @app.route('/api/scope/config', methods=['POST'])

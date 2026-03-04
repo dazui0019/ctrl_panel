@@ -483,6 +483,62 @@
         .device-add-form .btn {
             flex-shrink: 0;
         }
+
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 12000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+
+        .toast {
+            min-width: 260px;
+            max-width: min(520px, calc(100vw - 40px));
+            padding: 10px 14px;
+            border-radius: 8px;
+            color: white;
+            font-size: 13px;
+            line-height: 1.4;
+            white-space: pre-line;
+            word-break: break-all;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+            opacity: 0;
+            transform: translateY(-8px);
+            transition: opacity 0.18s ease, transform 0.18s ease;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toast-success {
+            background: #2f855a;
+        }
+
+        .toast-error {
+            background: #c53030;
+        }
+
+        .toast-info {
+            background: #4a5568;
+        }
+
+        @media (max-width: 600px) {
+            .toast-container {
+                top: 10px;
+                right: 10px;
+            }
+
+            .toast {
+                min-width: 0;
+                max-width: calc(100vw - 20px);
+            }
+        }
     </style>
 </head>
 <body>
@@ -552,8 +608,11 @@
                     <label>USB 序列号</label>
                     <div class="inline-form">
                         <input type="text" id="scope-serial" value="90Y701585" placeholder="USB 序列号" oninput="scopeSerialChanged()">
+                    </div>
+                    <div class="btn-group" style="margin-top: 10px;">
                         <button class="btn btn-primary" onclick="scopeToggleConnect()" id="btn-scope-connect" style="padding:8px 20px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;height:38px;min-width:70px;">连接</button>
                         <button class="btn btn-secondary" onclick="scopeToggleLock()" id="btn-scope-lock" style="display:none;">锁定</button>
+                        <button class="btn btn-secondary" onclick="scopeCopyScreenshot()" id="btn-scope-copy" style="display:none;">截图</button>
                     </div>
                 </div>
 
@@ -664,6 +723,30 @@
         let selectedDevices = new Set();  // 选中的设备
         let contextMenuSN = null;  // 右键点击的设备SN
 
+        function showToast(message, type = 'info', duration = 2600) {
+            let container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.add('show');
+            });
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 220);
+            }, duration);
+        }
+
         // 初始化
         window.onload = async function() {
             // 先获取设备状态，再加载设备列表
@@ -746,6 +829,8 @@
                     document.getElementById('scope-title-status').textContent = '已连接';
                     // 显示锁定按钮
                     document.getElementById('btn-scope-lock').style.display = 'inline-block';
+                    document.getElementById('btn-scope-copy').style.display = 'inline-block';
+                    document.getElementById('btn-scope-copy').disabled = false;
                     // 同步通道状态
                     scopeSyncChannelState();
                 }
@@ -1523,6 +1608,8 @@
             document.getElementById('btn-scope-connect').textContent = connected ? '断开' : '连接';
             document.getElementById('scope-serial').disabled = connected;
             document.getElementById('btn-scope-lock').style.display = connected ? 'inline-block' : 'none';
+            document.getElementById('btn-scope-copy').style.display = connected ? 'inline-block' : 'none';
+            document.getElementById('btn-scope-copy').disabled = !connected;
             // 更新通道卡片颜色
             for (let i = 1; i <= 4; i++) {
                 const ch = document.getElementById(`scope-ch${i}`);
@@ -1551,6 +1638,39 @@
                 }
             } catch (e) {
                 console.error('操作失败', e);
+            }
+        }
+
+        async function scopeCopyScreenshot() {
+            if (!scopeConnected) {
+                return;
+            }
+
+            const btn = document.getElementById('btn-scope-copy');
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '复制中...';
+            stopAutoRefresh();
+
+            try {
+                const res = await fetch('/api/scope/copy_screenshot', {
+                    method: 'POST'
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.message || '复制示波器截图失败');
+                }
+
+                showToast(`示波器截图已复制到剪贴板\n保存路径: ${data.filepath}`, 'success', 3600);
+            } catch (e) {
+                console.error('复制示波器截图失败', e);
+                showToast('复制示波器截图失败: ' + (e.message || '未知错误'), 'error', 4200);
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = !scopeConnected;
+                if (scopeConnected) {
+                    checkAllChannelsClosed();
+                }
             }
         }
 
