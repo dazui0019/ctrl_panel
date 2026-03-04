@@ -41,6 +41,11 @@ uv run python app.py
 
 然后在浏览器打开: http://127.0.0.1:5000
 
+## 技术文档
+
+- [API 文档](docs/API.md)
+- [架构与运行说明](docs/ARCHITECTURE.md)
+
 ## 硬件连接
 
 ### 电阻控制器
