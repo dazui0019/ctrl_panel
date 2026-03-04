@@ -33,16 +33,10 @@
 - Python 3.11+
 - Windows 操作系统
 
-## 安装依赖
-
-```bash
-pip install flask pyserial pyvisa
-```
-
 ## 运行
 
 ```bash
-python app.py
+uv run python app.py
 ```
 
 然后在浏览器打开: http://127.0.0.1:5000
@@ -66,8 +60,14 @@ python app.py
 ```
 ctrl_panel/
 ├── app.py              # Flask 主应用
+├── device_runtime.py   # 设备控制器与运行时状态
 ├── templates/
 │   └── index.html     # 前端页面
+├── static/
+│   ├── css/
+│   │   └── index.css  # 前端样式
+│   └── js/
+│       └── index.js   # 前端脚本逻辑
 ├── scripts/
 │   ├── res_ctrl/      # 电阻控制脚本
 │   │   └── ntc_res.txt    # NTC 电阻-温度对照表
