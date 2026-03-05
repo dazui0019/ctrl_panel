@@ -1,9 +1,9 @@
 [submodule "scripts/res_ctrl"]
 	path = scripts/res_ctrl
-	url = git@github.com:dazui0019/res_ctrl.git
+	url = https://github.com/dazui0019/res_ctrl.git
 [submodule "scripts/yokogawa"]
 	path = scripts/yokogawa
-	url = git@github.com:dazui0019/yokogawa.git
+	url = https://github.com/dazui0019/yokogawa.git
 [submodule "scripts/power_ctrl"]
 	path = scripts/power_ctrl
-	url = git@github.com:dazui0019/power_ctrl.git
+	url = https://github.com/dazui0019/power_ctrl.git
