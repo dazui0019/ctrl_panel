@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import subprocess
+import shutil
 
 # 添加 scripts 目录到路径
 SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
@@ -106,7 +107,10 @@ class ResistanceController:
         """列出可用串口"""
         from serial.tools import list_ports
         ports = list_ports.comports()
-        return [p.device for p in ports]
+        devices = [p.device for p in ports]
+        if os.name != "nt":
+            devices = [d for d in devices if re.fullmatch(r"/dev/ttyUSB\d+", d)]
+        return devices
 
     def connect(self, port, baudrate=9600):
         """连接串口"""
@@ -148,10 +152,11 @@ class ResistanceController:
 
     def _format_command(self, cmd, sn=None):
         """格式化指令，支持 RS485 SN 码"""
-        if sn:
-            if cmd.startswith("AT+"):
-                base = cmd.replace("\r\n", "").replace("\n", "")
+        if cmd.startswith("AT+"):
+            base = cmd.replace("\r\n", "").replace("\n", "")
+            if sn:
                 return f"AT+{base[3:]}@{sn}\r\n"
+            return f"{base}\r\n"
         return cmd
 
     def _serial_worker_loop(self):
@@ -510,19 +515,95 @@ def build_res_device_status(device):
 # ========== 电源控制模块 ==========
 class PowerController:
     """电源控制器"""
+    KNOWN_USB_VENDORS = {
+        0x2EC7: "ITECH",
+        0x0B21: "Yokogawa",
+        0x0957: "Keysight/Agilent",
+        0x0699: "Tektronix",
+        0x1AB1: "Rigol",
+    }
+
     def __init__(self):
         self.ps = None
         self.address = None
 
+    def _try_decode_hex_ascii(self, text):
+        if not text:
+            return None
+        if len(text) % 2 != 0:
+            return None
+        if not re.fullmatch(r"[0-9A-Fa-f]+", text):
+            return None
+        try:
+            decoded = bytes.fromhex(text).decode("ascii")
+        except Exception:
+            return None
+        if not decoded:
+            return None
+        # 仅接受可打印字符
+        if any(ord(c) < 32 or ord(c) > 126 for c in decoded):
+            return None
+        return decoded
+
+    def _normalize_usb_id(self, value):
+        try:
+            n = int(str(value), 0)
+            return n, f"0x{n:04X}"
+        except Exception:
+            return None, str(value)
+
+    def _build_resource_item(self, resource):
+        resource = str(resource)
+        item = {
+            "address": resource,
+            "label": resource,
+        }
+
+        if not resource.upper().startswith("USB"):
+            return item
+
+        parts = resource.split("::")
+        if len(parts) < 5:
+            return item
+
+        vid_num, vid_text = self._normalize_usb_id(parts[1])
+        _, pid_text = self._normalize_usb_id(parts[2])
+        serial_raw = parts[3]
+        interface_idx = parts[4] if len(parts) >= 6 else None
+        serial_decoded = self._try_decode_hex_ascii(serial_raw)
+        vendor_name = self.KNOWN_USB_VENDORS.get(vid_num)
+
+        sn_text = serial_decoded or serial_raw
+        device_name = vendor_name or "USB Device"
+        info = [f"SN={sn_text}", f"VID={vid_text}", f"PID={pid_text}"]
+        if interface_idx is not None and interface_idx != "":
+            info.append(f"IF={interface_idx}")
+
+        item["label"] = f"{device_name} ({', '.join(info)})"
+        return item
+
+    def _should_hide_resource(self, resource):
+        """过滤不希望在电源下拉框展示的 VISA 资源"""
+        return str(resource).upper().startswith("ASRL")
+
     def list_resources(self):
         """列出可用 VISA 资源"""
+        rm = None
         try:
             import pyvisa
+
             rm = pyvisa.ResourceManager()
             resources = rm.list_resources()
-            return resources
-        except Exception as e:
+            visible = [r for r in resources if not self._should_hide_resource(r)]
+            return [self._build_resource_item(r) for r in visible]
+        except Exception:
             return []
+        finally:
+            try:
+                if rm:
+                    rm.close()
+            except Exception:
+                pass
 
     def connect(self, address):
         """连接电源"""
@@ -596,14 +677,45 @@ power_controller = PowerController()
 
 # ========== 示波器控制模块 ==========
 class ScopeController:
-    """示波器控制器"""
+    """示波器控制器（Windows: tmctl, Linux: pyvisa）"""
     def __init__(self):
+        self.backend = None
         self.tmctl = None
+        self.rm = None
+        self.inst = None
         self.device_id = None
         self.io_lock = threading.Lock()
 
     def connect(self, serial_num="90Y701585"):
         """连接示波器"""
+        serial_num = str(serial_num or "90Y701585").strip()
+        self.disconnect()
+
+        # Windows 优先 tmctl，Linux 优先 pyvisa
+        if os.name == "nt":
+            backends = [("tmctl", self._connect_tmctl), ("pyvisa", self._connect_pyvisa)]
+        else:
+            backends = [("pyvisa", self._connect_pyvisa), ("tmctl", self._connect_tmctl)]
+
+        errors = []
+        for name, connect_func in backends:
+            ok, msg = connect_func(serial_num)
+            if ok:
+                return True, msg
+            errors.append(f"{name}: {msg}")
+
+        self._clear_connection_state()
+        return False, " ; ".join(errors) if errors else "连接失败"
+
+    def _clear_connection_state(self):
+        self.backend = None
+        self.tmctl = None
+        self.rm = None
+        self.inst = None
+        self.device_id = None
+
+    def _connect_tmctl(self, serial_num):
+        """使用 Yokogawa tmctl DLL 连接（主要用于 Windows）"""
         try:
             # 添加 yokogawa 目录到路径（需要 DLL 文件在同一目录）
             yokogawa_dir = os.path.join(SCRIPT_DIR, 'yokogawa')
@@ -617,10 +729,12 @@ class ScopeController:
             # 编码序列号
             ret, encode = self.tmctl.EncodeSerialNumber(128, serial_num)
             if ret != 0:
+                self._clear_connection_state()
                 return False, "序列号编码失败"
 
             ret, self.device_id = self.tmctl.Initialize(tmctlLib.TM_CTL_USBTMC3, encode)
             if ret != 0:
+                self._clear_connection_state()
                 return False, f"连接失败 (Error Code: {ret})"
 
             # 基础设置
@@ -635,29 +749,161 @@ class ScopeController:
                 self.tmctl.Send(self.device_id, f":MEASure:CHANnel{ch}:AVERage:STATe ON")
             self.tmctl.Send(self.device_id, ":MEASure:MODE ON")
 
-            return True, "连接成功"
+            self.backend = "tmctl"
+            self.rm = None
+            self.inst = None
+            return True, "连接成功 (tmctl)"
         except Exception as e:
+            self._clear_connection_state()
             return False, str(e)
+
+    def _find_pyvisa_resource(self, rm, serial_num):
+        """根据序列号查找 VISA 资源"""
+        try:
+            resources = rm.list_resources()
+        except Exception:
+            resources = []
+
+        serial_upper = serial_num.upper()
+        if serial_upper.endswith("::INSTR") and "::" in serial_num:
+            return serial_num
+
+        # 设备序列号可能被驱动转成 HEX 字符串
+        serial_hex = "".join(f"{ord(c):02X}" for c in serial_num)
+
+        usb_resources = []
+        for res in resources:
+            res_upper = res.upper()
+            if "USB" not in res_upper:
+                continue
+            usb_resources.append(res)
+            if serial_upper in res_upper or serial_hex in res_upper:
+                return res
+
+        # 仅有一个 USB 设备时，允许自动兜底
+        if len(usb_resources) == 1:
+            return usb_resources[0]
+
+        return None
+
+    def _connect_pyvisa(self, serial_num):
+        """使用 PyVISA 连接（主要用于 Linux）"""
+        rm = None
+        inst = None
+        try:
+            import pyvisa
+
+            rm = pyvisa.ResourceManager()
+            resource = self._find_pyvisa_resource(rm, serial_num)
+            if not resource:
+                try:
+                    rm.close()
+                except Exception:
+                    pass
+                return False, f"未找到序列号为 {serial_num} 的 VISA 设备"
+
+            inst = rm.open_resource(resource)
+            inst.read_termination = "\n"
+            inst.write_termination = "\n"
+            inst.timeout = 30000  # ms
+
+            try:
+                inst.write("*CLS")
+            except Exception:
+                pass
+
+            inst.write(":COMMunicate:HEADer OFF")
+            for ch in range(1, 5):
+                inst.write(f":MEASure:CHANnel{ch}:AVERage:STATe ON")
+            inst.write(":MEASure:MODE ON")
+
+            self.backend = "pyvisa"
+            self.rm = rm
+            self.inst = inst
+            self.tmctl = None
+            self.device_id = resource
+            return True, f"连接成功 (pyvisa: {resource})"
+        except Exception as e:
+            try:
+                if inst:
+                    inst.close()
+            except Exception:
+                pass
+            try:
+                if rm:
+                    rm.close()
+            except Exception:
+                pass
+            self._clear_connection_state()
+            return False, str(e)
+
+    def _send_scpi(self, cmd):
+        if self.backend == "tmctl":
+            self.tmctl.Send(self.device_id, cmd)
+        elif self.backend == "pyvisa":
+            self.inst.write(cmd)
+        else:
+            raise RuntimeError("示波器未连接")
+
+    def _query_scpi(self, cmd, buf_size=1000):
+        if self.backend == "tmctl":
+            self.tmctl.Send(self.device_id, cmd)
+            _, buf, _ = self.tmctl.Receive(self.device_id, buf_size)
+            return str(buf).strip()
+        if self.backend == "pyvisa":
+            return str(self.inst.query(cmd)).strip()
+        raise RuntimeError("示波器未连接")
 
     def disconnect(self):
         """断开示波器"""
-        if self.device_id is not None and self.device_id >= 0:
+        if self.backend == "tmctl" and self.device_id is not None:
             try:
                 self.tmctl.SetRen(self.device_id, 0)
                 self.tmctl.Finish(self.device_id)
-            except:
+            except Exception:
                 pass
-            self.device_id = None
+        elif self.backend == "pyvisa":
+            try:
+                if self.inst:
+                    self.inst.close()
+            except Exception:
+                pass
+            try:
+                if self.rm:
+                    self.rm.close()
+            except Exception:
+                pass
+
+        self._clear_connection_state()
 
     def unlock_local(self):
         """解锁示波器本地控制（保持连接）"""
-        if self.device_id is not None and self.device_id >= 0:
+        if self.device_id is None:
+            return
+        if self.backend == "tmctl":
             self.tmctl.SetRen(self.device_id, 0)
+        elif self.backend == "pyvisa":
+            # 对 pyvisa 后端优先使用 VISA REN 控制；部分 USBTMC 设备不支持时降级为 no-op
+            try:
+                import pyvisa
+                if hasattr(self.inst, "control_ren"):
+                    self.inst.control_ren(pyvisa.constants.RENLineOperation.deassert)
+            except Exception:
+                pass
 
     def lock_remote(self):
         """锁定示波器为远程控制（保持连接）"""
-        if self.device_id is not None and self.device_id >= 0:
+        if self.device_id is None:
+            return
+        if self.backend == "tmctl":
             self.tmctl.SetRen(self.device_id, 1)
+        elif self.backend == "pyvisa":
+            try:
+                import pyvisa
+                if hasattr(self.inst, "control_ren"):
+                    self.inst.control_ren(pyvisa.constants.RENLineOperation.asrt)
+            except Exception:
+                pass
 
     def set_channel(self, channel, enable):
         """设置通道开关"""
@@ -667,7 +913,7 @@ class ScopeController:
         try:
             with self.io_lock:
                 cmd = f":CHANnel{channel}:DISPlay {'ON' if enable else 'OFF'}"
-                self.tmctl.Send(self.device_id, cmd)
+                self._send_scpi(cmd)
             return True, "设置成功"
         except Exception as e:
             return False, str(e)
@@ -680,11 +926,9 @@ class ScopeController:
         try:
             with self.io_lock:
                 cmd = f":CHANnel{channel}:DISPlay?"
-                self.tmctl.Send(self.device_id, cmd)
-                ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
-            buf_str = buf.strip().upper()
+                buf_str = self._query_scpi(cmd, buf_size=1000).upper()
             return buf_str in ['1', 'ON']
-        except Exception as e:
+        except Exception:
             return None
 
     def get_mean(self, channel=1):
@@ -696,12 +940,11 @@ class ScopeController:
             # 查询
             with self.io_lock:
                 cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
-                self.tmctl.Send(self.device_id, cmd)
-                ret, buf, length = self.tmctl.Receive(self.device_id, 1000)
+                buf_str = self._query_scpi(cmd, buf_size=1000)
 
             try:
                 # 清理响应字符串（去除换行符、空格等）
-                buf_str = buf.strip()
+                buf_str = buf_str.strip()
                 # 检查是否是 NAN
                 if buf_str.upper() == 'NAN':
                     return None
@@ -731,6 +974,13 @@ class ScopeController:
         if self.device_id is None:
             return False, "示波器未连接", None
 
+        if self.backend == "tmctl":
+            return self._get_screenshot_tmctl()
+        if self.backend == "pyvisa":
+            return self._get_screenshot_pyvisa()
+        return False, "未知后端", None
+
+    def _get_screenshot_tmctl(self):
         with self.io_lock:
             try:
                 # 截图传输较慢，临时延长超时
@@ -762,7 +1012,7 @@ class ScopeController:
 
                 buf = bytearray(block_size)
                 for i in range(loop_count):
-                    ret, rlen, end = self.tmctl.ReceiveBlockData(self.device_id, buf, block_size)
+                    ret, rlen, _ = self.tmctl.ReceiveBlockData(self.device_id, buf, block_size)
                     if ret != 0:
                         return False, f"接收截图数据块失败 (块={i}, Ret={ret})", None
                     if rlen > 0:
@@ -771,7 +1021,7 @@ class ScopeController:
                 if remainder > 0:
                     req_size = remainder + 16
                     buf_rem = bytearray(req_size)
-                    ret, rlen, end = self.tmctl.ReceiveBlockData(self.device_id, buf_rem, req_size)
+                    ret, rlen, _ = self.tmctl.ReceiveBlockData(self.device_id, buf_rem, req_size)
                     if ret != 0:
                         return False, f"接收截图剩余数据失败 (Ret={ret})", None
 
@@ -796,6 +1046,74 @@ class ScopeController:
                 except Exception:
                     pass
 
+    def _get_screenshot_pyvisa(self):
+        with self.io_lock:
+            old_timeout = None
+            old_term = None
+            try:
+                old_timeout = self.inst.timeout
+                old_term = self.inst.read_termination
+                self.inst.timeout = 120000
+
+                try:
+                    self.inst.write("*CLS")
+                except Exception:
+                    pass
+
+                self.inst.write(":STOP")
+                self.inst.query("*OPC?")
+                self.inst.write(":IMAGe:FORMat PNG")
+                self.inst.query("*OPC?")
+                self.inst.write(":IMAGe:SEND?")
+
+                self.inst.read_termination = None
+
+                raw_data = bytearray(self.inst.read_raw())
+                if len(raw_data) < 2 or raw_data[0:1] != b"#":
+                    return False, "未检测到标准截图数据头", None
+
+                # IEEE 488.2 block header: #Nxxxxx
+                digits = int(chr(raw_data[1]))
+                header_len = 2 + digits
+                while len(raw_data) < header_len:
+                    chunk = self.inst.read_raw()
+                    if not chunk:
+                        return False, "截图头读取中断", None
+                    raw_data.extend(chunk)
+
+                total_len = int(raw_data[2:header_len].decode("ascii"))
+                total_expected = header_len + total_len
+
+                while len(raw_data) < total_expected:
+                    chunk = self.inst.read_raw()
+                    if not chunk:
+                        return False, "截图数据读取中断", None
+                    raw_data.extend(chunk)
+
+                image_data = bytes(raw_data[header_len:header_len + total_len])
+                if len(image_data) < total_len:
+                    return False, f"截图数据不完整 ({len(image_data)}/{total_len})", None
+
+                return True, "截图成功", image_data
+            except Exception as e:
+                return False, str(e), None
+            finally:
+                # 无论成功失败都尽量恢复采集和常规超时
+                try:
+                    self.inst.write(":STARt")
+                except Exception:
+                    pass
+                try:
+                    if old_term is not None:
+                        self.inst.read_termination = old_term
+                except Exception:
+                    pass
+                try:
+                    if old_timeout is not None:
+                        self.inst.timeout = old_timeout
+                except Exception:
+                    pass
+
     def save_screenshot(self):
         """截图并保存到本地文件"""
         success, msg, image_data = self.get_screenshot()
@@ -814,34 +1132,70 @@ class ScopeController:
             return False, f"截图保存失败: {e}", None
 
     def copy_image_to_clipboard(self, filepath):
-        """将本地图片复制到 Windows 剪贴板"""
+        """将本地图片复制到系统剪贴板"""
         if not filepath or not os.path.exists(filepath):
             return False, "截图文件不存在"
 
-        path_ps = os.path.abspath(filepath).replace("'", "''")
-        ps_script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "Add-Type -AssemblyName System.Drawing; "
-            f"$img = [System.Drawing.Image]::FromFile('{path_ps}'); "
-            "try { [System.Windows.Forms.Clipboard]::SetImage($img) } "
-            "finally { $img.Dispose() }"
-        )
-
         try:
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-STA", "-Command", ps_script],
-                capture_output=True,
-                text=True,
-                timeout=20
-            )
-            if result.returncode != 0:
-                err = (result.stderr or result.stdout or "").strip()
-                return False, err or f"复制失败 (返回码 {result.returncode})"
-            return True, "已复制到剪贴板"
+            if os.name == "nt":
+                path_ps = os.path.abspath(filepath).replace("'", "''")
+                ps_script = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "Add-Type -AssemblyName System.Drawing; "
+                    f"$img = [System.Drawing.Image]::FromFile('{path_ps}'); "
+                    "try { [System.Windows.Forms.Clipboard]::SetImage($img) } "
+                    "finally { $img.Dispose() }"
+                )
+
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-STA", "-Command", ps_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=20
+                )
+                if result.returncode != 0:
+                    err = (result.stderr or result.stdout or "").strip()
+                    return False, err or f"复制失败 (返回码 {result.returncode})"
+                return True, "已复制到剪贴板"
+
+            with open(filepath, "rb") as f:
+                image_bytes = f.read()
+
+            wl_copy = shutil.which("wl-copy")
+            if wl_copy:
+                result = subprocess.run(
+                    [wl_copy, "--type", "image/png"],
+                    input=image_bytes,
+                    capture_output=True,
+                    timeout=20
+                )
+                if result.returncode == 0:
+                    return True, "已复制到剪贴板 (Wayland)"
+
+            xclip = shutil.which("xclip")
+            if xclip:
+                result = subprocess.run(
+                    [xclip, "-selection", "clipboard", "-t", "image/png", "-i", filepath],
+                    capture_output=True,
+                    timeout=20
+                )
+                if result.returncode == 0:
+                    return True, "已复制到剪贴板 (xclip)"
+
+            xsel = shutil.which("xsel")
+            if xsel:
+                result = subprocess.run(
+                    [xsel, "--clipboard", "--input"],
+                    input=image_bytes,
+                    capture_output=True,
+                    timeout=20
+                )
+                if result.returncode == 0:
+                    return True, "已复制到剪贴板 (xsel)"
+
+            return False, "未找到可用的 Linux 剪贴板工具（请安装 wl-clipboard 或 xclip）"
         except Exception as e:
             return False, str(e)
 
 
 scope_controller = ScopeController()
-
-

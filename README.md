@@ -31,7 +31,8 @@
 ## 环境要求
 
 - Python 3.11+
-- Windows 操作系统
+- Windows 或 Linux 操作系统
+- Linux 下示波器控制需确保已安装 `pyvisa-py`/`pyusb`，并按 `scripts/yokogawa/README_Linux.md` 配置 udev 权限
 
 ## 运行
 
@@ -41,6 +42,20 @@ uv run python app.py
 
 然后在浏览器打开: http://127.0.0.1:5000
 
+### HTTPS（用于浏览器剪贴板）
+
+开发环境可直接启用临时证书：
+
+```bash
+FLASK_SSL_MODE=adhoc uv run python app.py
+```
+
+生产/局域网建议使用证书文件：
+
+```bash
+FLASK_SSL_MODE=files FLASK_SSL_CERT=/path/to/fullchain.pem FLASK_SSL_KEY=/path/to/privkey.pem uv run python app.py
+```
+
 ## 技术文档
 
 - [API 文档](docs/API.md)
@@ -49,7 +64,7 @@ uv run python app.py
 ## 硬件连接
 
 ### 电阻控制器
-- 通过串口 (COMx) 连接
+- 通过串口连接（Windows 常见 COMx，Linux 常见 /dev/ttyUSBx）
 - 支持 RS485 总线多设备，通过 SN 码区分
 
 ### 电源

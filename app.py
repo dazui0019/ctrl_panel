@@ -6,7 +6,7 @@
 """
 
 import os
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 
 from device_runtime import (
     state,
@@ -468,25 +468,31 @@ def scope_get_mean():
 
 @app.route('/api/scope/copy_screenshot', methods=['POST'])
 def scope_copy_screenshot():
-    """截图保存到本地并复制到剪贴板"""
+    """截图保存到服务端，并返回给前端用于客户端复制"""
     success, msg, filepath = scope_controller.save_screenshot()
     if not success:
         status = 400 if msg == "示波器未连接" else 500
         return jsonify({"success": False, "message": msg}), status
 
-    success, clip_msg = scope_controller.copy_image_to_clipboard(filepath)
-    if not success:
-        return jsonify({
-            "success": False,
-            "message": f"截图已保存，但复制失败: {clip_msg}",
-            "filepath": filepath
-        }), 500
+    filename = os.path.basename(filepath)
 
     return jsonify({
         "success": True,
-        "message": "截图已保存并复制到剪贴板",
-        "filepath": filepath
+        "message": "截图已保存，正在复制到当前浏览器所在电脑的剪贴板",
+        "filepath": filepath,
+        "filename": filename,
+        "download_url": f"/api/scope/screenshot/{filename}",
     })
+
+
+@app.route('/api/scope/screenshot/<path:filename>', methods=['GET'])
+def scope_screenshot_file(filename):
+    """读取服务端保存的截图文件"""
+    if not filename.lower().endswith(".png"):
+        return jsonify({"success": False, "message": "仅支持 PNG 文件"}), 400
+
+    screenshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots')
+    return send_from_directory(screenshot_dir, filename, mimetype="image/png", as_attachment=False)
 
 
 @app.route('/api/scope/config', methods=['POST'])
@@ -551,10 +557,25 @@ if __name__ == '__main__':
         os.makedirs(templates_dir)
 
     debug_mode = os.getenv("FLASK_DEBUG", "0").strip().lower() in ("1", "true", "yes", "on")
+    port = int(os.getenv("FLASK_PORT", "5000"))
+
+    ssl_mode = os.getenv("FLASK_SSL_MODE", "off").strip().lower()
+    ssl_cert = os.getenv("FLASK_SSL_CERT", "").strip()
+    ssl_key = os.getenv("FLASK_SSL_KEY", "").strip()
+    ssl_context = None
+
+    if ssl_mode in ("1", "true", "yes", "on", "adhoc"):
+        ssl_context = "adhoc"
+    elif ssl_mode in ("files", "cert", "certificate"):
+        if ssl_cert and ssl_key and os.path.exists(ssl_cert) and os.path.exists(ssl_key):
+            ssl_context = (ssl_cert, ssl_key)
+        else:
+            print("[警告] FLASK_SSL_MODE=files 但证书或私钥无效，已回退 HTTP")
 
     print("=" * 50)
     print("控制面板启动中...")
-    print("请在浏览器打开: http://127.0.0.1:5000")
+    scheme = "https" if ssl_context else "http"
+    print(f"请在浏览器打开: {scheme}://127.0.0.1:{port}")
     print("=" * 50)
 
-    app.run(debug=debug_mode, host='0.0.0.0', port=5000)
+    app.run(debug=debug_mode, host='0.0.0.0', port=port, ssl_context=ssl_context)

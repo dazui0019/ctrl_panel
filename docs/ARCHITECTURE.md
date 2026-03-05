@@ -64,9 +64,11 @@
 执行顺序：
 
 1. 停止采集并获取 PNG 数据块
-2. 保存到本地文件
-3. 调用 PowerShell（STA）复制图片到剪贴板
-4. 恢复采集和超时设置
+2. 保存到服务端文件
+3. 返回截图下载 URL 给前端
+4. 前端在浏览器侧复制到“当前访问页面的电脑”剪贴板
+5. 浏览器策略不允许时回退为下载到本机
+6. 恢复采集和超时设置
 
 ## 5. 前端数据更新策略
 
@@ -97,7 +99,10 @@ uv run python app.py
 开启 debug（默认关闭）：
 
 ```bash
-# PowerShell
+# Linux / macOS
+FLASK_DEBUG=1 uv run python app.py
+
+# Windows PowerShell
 $env:FLASK_DEBUG = "1"
 uv run python app.py
 ```

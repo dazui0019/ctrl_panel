@@ -8,4 +8,6 @@ dependencies = [
     "flask>=3.0.0",
     "pyserial>=3.5",
     "pyvisa>=1.14.0",
+    "pyvisa-py>=0.8.1",
+    "pyusb>=1.3.1",
 ]

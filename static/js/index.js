@@ -694,8 +694,13 @@ async function powerRefreshResources() {
         const data = await res.json();
         const select = document.getElementById('power-address');
         select.innerHTML = '<option value="">请选择电源...</option>';
-        data.resources.forEach(r => {
-            select.innerHTML += `<option value="${r}">${r}</option>`;
+        data.resources.forEach(item => {
+            const address = typeof item === 'string' ? item : (item.address || '');
+            const label = typeof item === 'string' ? item : (item.label || address);
+            if (!address) {
+                return;
+            }
+            select.innerHTML += `<option value="${address}">${label}</option>`;
         });
     } catch (e) {
         console.error('获取资源列表失败', e);
@@ -954,7 +959,52 @@ async function scopeCopyScreenshot() {
             throw new Error(data.message || '复制示波器截图失败');
         }
 
-        showToast(`示波器截图已复制到剪贴板\n保存路径: ${data.filepath}`, 'success', 3600);
+        const imageRes = await fetch(data.download_url, {
+            method: 'GET',
+            cache: 'no-store'
+        });
+        if (!imageRes.ok) {
+            throw new Error('获取截图文件失败');
+        }
+        const imageBlob = await imageRes.blob();
+
+        let copied = false;
+        let copyFailReason = '';
+        if (window.isSecureContext && navigator.clipboard && window.ClipboardItem) {
+            try {
+                const mimeType = imageBlob.type || 'image/png';
+                const item = new ClipboardItem({[mimeType]: imageBlob});
+                await navigator.clipboard.write([item]);
+                copied = true;
+            } catch (err) {
+                copyFailReason = err?.message || '浏览器未授权图片剪贴板';
+            }
+        } else if (!window.isSecureContext) {
+            copyFailReason = '当前页面不是 HTTPS/localhost，浏览器禁止直接写入系统剪贴板';
+        } else {
+            copyFailReason = '当前浏览器不支持图片剪贴板 API';
+        }
+
+        if (copied) {
+            showToast(`示波器截图已复制到当前电脑剪贴板\n保存路径: ${data.filepath}`, 'success', 3800);
+            return;
+        }
+
+        const filename = data.filename || 'scope_screenshot.png';
+        const localUrl = URL.createObjectURL(imageBlob);
+        const a = document.createElement('a');
+        a.href = localUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(localUrl), 1000);
+
+        showToast(
+            `截图已下载到当前电脑（未写入剪贴板）\n原因: ${copyFailReason || '未知原因'}\n服务端保存路径: ${data.filepath}`,
+            'info',
+            5200
+        );
     } catch (e) {
         console.error('复制示波器截图失败', e);
         showToast('复制示波器截图失败: ' + (e.message || '未知错误'), 'error', 4200);
@@ -1091,4 +1141,3 @@ function stopAutoRefresh() {
         scopeRefreshTimer = null;
     }
 }
-

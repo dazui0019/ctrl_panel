@@ -106,6 +106,19 @@ POST /api/res/devices/order
 | POST | `/api/power/set` | 设置电压/电流/输出 |
 | GET | `/api/power/measure` | 读取电压电流 |
 
+`/api/power/list_resources` 返回示例：
+
+```json
+{
+  "resources": [
+    {
+      "address": "USB0::0x2EC7::0x6700::DP8A123456::INSTR",
+      "label": "ITECH (SN=DP8A123456, VID=0x2EC7, PID=0x6700)"
+    }
+  ]
+}
+```
+
 `/api/power/set` 请求示例：
 
 ```json
@@ -127,23 +140,27 @@ POST /api/res/devices/order
 | POST | `/api/scope/channel` | 设置通道开关 |
 | GET | `/api/scope/channel_state` | 获取 4 通道开关状态 |
 | GET | `/api/scope/get_mean` | 获取 4 通道平均值 |
-| POST | `/api/scope/copy_screenshot` | 保存截图并复制到剪贴板 |
+| POST | `/api/scope/copy_screenshot` | 生成并保存截图，返回客户端复制所需信息 |
+| GET | `/api/scope/screenshot/<filename>` | 读取服务端保存的 PNG 截图 |
 | POST | `/api/scope/config` | 更新前端配置状态（刷新间隔等） |
 | GET | `/api/scope/state` | 获取示波器状态 |
 
 `/api/scope/copy_screenshot` 关键行为：
 
 1. 从示波器拉取 PNG 二进制数据。
-2. 保存到本地 `screenshots/`。
-3. 调用 `powershell -STA` 将图片放入 Windows 剪贴板。
+2. 保存到服务端 `screenshots/`。
+3. 返回 `download_url`，前端再拉取 PNG 并尝试写入“当前访问页面的电脑”的剪贴板。
+4. 若浏览器不支持或策略不允许（如非 HTTPS），前端会回退为下载到本机。
 
 成功返回示例：
 
 ```json
 {
   "success": true,
-  "message": "截图已保存并复制到剪贴板",
-  "filepath": "D:/.../screenshots/DLM_20260304_123456.png"
+  "message": "截图已保存，正在复制到当前浏览器所在电脑的剪贴板",
+  "filepath": "/.../screenshots/DLM_20260304_123456.png",
+  "filename": "DLM_20260304_123456.png",
+  "download_url": "/api/scope/screenshot/DLM_20260304_123456.png"
 }
 ```
 
