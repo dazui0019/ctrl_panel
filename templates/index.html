@@ -44,9 +44,14 @@
                     <button class="btn btn-danger" onclick="resDeviceAction('disconnect')" id="btn-res-device-disconnect">开路</button>
                     <button class="btn btn-warning" onclick="resDeviceAction('short')" id="btn-res-device-short">短路</button>
                     <button class="btn btn-secondary" onclick="resDeviceAction('unshort')" id="btn-res-device-unshort">取消短路</button>
-                    <button class="btn btn-secondary" onclick="resSelectAll()">全选</button>
-                    <button class="btn btn-secondary" onclick="resDeselectAll()">取消</button>
-                    <button class="btn btn-danger" onclick="resDeleteSelected()">删除选中</button>
+                    <button class="btn btn-secondary" onclick="resToggleSelectAll()" id="btn-res-select-toggle">全选</button>
+                    <span class="res-quick-temp-group">
+                        <span class="res-quick-temp-label">常用温度</span>
+                        <button class="btn btn-secondary" id="btn-res-quick-temp-0" onclick="resBatchSetTemperatureByIndex(0)">-40℃</button>
+                        <button class="btn btn-secondary" id="btn-res-quick-temp-1" onclick="resBatchSetTemperatureByIndex(1)">25℃</button>
+                        <button class="btn btn-secondary" id="btn-res-quick-temp-2" onclick="resBatchSetTemperatureByIndex(2)">85℃</button>
+                        <button class="btn btn-secondary" onclick="resConfigQuickTemps()">配置</button>
+                    </span>
                 </div>
 
                 <!-- 设备列表 -->
@@ -180,4 +185,3 @@
     <script src="{{ url_for('static', filename='js/index.js') }}"></script>
 </body>
 </html>
-

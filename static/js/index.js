@@ -7,6 +7,9 @@ let resSerialConnected = false;
 let devices = [];  // 设备列表
 let selectedDevices = new Set();  // 选中的设备
 let contextMenuSN = null;  // 右键点击的设备SN
+const RES_QUICK_TEMP_STORAGE_KEY = 'res_quick_temps_v1';
+const RES_QUICK_TEMP_DEFAULTS = [-40, 25, 85];
+let resQuickTemps = [...RES_QUICK_TEMP_DEFAULTS];
 
 function showToast(message, type = 'info', duration = 2600) {
     let container = document.getElementById('toast-container');
@@ -34,6 +37,8 @@ function showToast(message, type = 'info', duration = 2600) {
 
 // 初始化
 window.onload = async function() {
+    initResQuickTemps();
+
     // 先获取设备状态，再加载设备列表
     await updateDeviceStates();
 
@@ -282,8 +287,13 @@ async function resRefreshDeviceValuesOnce() {
 function renderDevices() {
     const grid = document.getElementById('device-grid');
 
+    selectedDevices = new Set(
+        Array.from(selectedDevices).filter(sn => devices.some(d => d.sn === sn))
+    );
+
     if (devices.length === 0) {
         grid.innerHTML = '<div class="loading">暂无设备，请添加设备</div>';
+        updateSelectToggleButton();
         return;
     }
 
@@ -373,6 +383,8 @@ function renderDevices() {
 
         grid.appendChild(card);
     });
+
+    updateSelectToggleButton();
 }
 
 // 切换设备选中状态
@@ -385,16 +397,104 @@ function toggleDeviceSelect(sn) {
     renderDevices();
 }
 
-// 全选
-function resSelectAll() {
-    devices.forEach(d => selectedDevices.add(d.sn));
+function resToggleSelectAll() {
+    if (devices.length === 0) {
+        return;
+    }
+
+    const allSelected = devices.every(d => selectedDevices.has(d.sn));
+    if (allSelected) {
+        selectedDevices.clear();
+    } else {
+        devices.forEach(d => selectedDevices.add(d.sn));
+    }
     renderDevices();
 }
 
-// 取消全选
-function resDeselectAll() {
-    selectedDevices.clear();
-    renderDevices();
+function updateSelectToggleButton() {
+    const btn = document.getElementById('btn-res-select-toggle');
+    if (!btn) {
+        return;
+    }
+
+    if (devices.length === 0) {
+        btn.textContent = '全选';
+        btn.disabled = true;
+        return;
+    }
+
+    btn.disabled = false;
+    const allSelected = devices.every(d => selectedDevices.has(d.sn));
+    btn.textContent = allSelected ? '取消全选' : '全选';
+}
+
+function initResQuickTemps() {
+    try {
+        const raw = localStorage.getItem(RES_QUICK_TEMP_STORAGE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                const nums = parsed
+                    .map(v => Number(v))
+                    .filter(v => !Number.isNaN(v))
+                    .slice(0, 3);
+                if (nums.length === 3) {
+                    resQuickTemps = nums;
+                }
+            }
+        }
+    } catch (e) {
+        console.error('加载常用温度配置失败', e);
+    }
+    renderQuickTempButtons();
+}
+
+function renderQuickTempButtons() {
+    for (let i = 0; i < 3; i++) {
+        const btn = document.getElementById(`btn-res-quick-temp-${i}`);
+        if (!btn) {
+            continue;
+        }
+        const value = resQuickTemps[i];
+        btn.textContent = `${value}℃`;
+        btn.title = `为选中设备设置 ${value}℃`;
+    }
+}
+
+function resConfigQuickTemps() {
+    const input = window.prompt(
+        '请输入 3 个常用温度（用英文逗号分隔），例如：-40,25,85',
+        resQuickTemps.join(',')
+    );
+    if (input === null) {
+        return;
+    }
+
+    const values = input
+        .split(',')
+        .map(s => Number(s.trim()))
+        .filter(v => !Number.isNaN(v));
+
+    if (values.length !== 3) {
+        alert('请准确输入 3 个温度值。');
+        return;
+    }
+
+    resQuickTemps = values;
+    renderQuickTempButtons();
+    try {
+        localStorage.setItem(RES_QUICK_TEMP_STORAGE_KEY, JSON.stringify(resQuickTemps));
+    } catch (e) {
+        console.error('保存常用温度配置失败', e);
+    }
+}
+
+function resBatchSetTemperatureByIndex(index) {
+    const temp = resQuickTemps[index];
+    if (typeof temp === 'undefined') {
+        return;
+    }
+    resBatchSetTemperature(temp);
 }
 
 // 添加设备
@@ -451,6 +551,53 @@ async function resDeviceAction(action) {
         await resLoadDevices();
     } catch (e) {
         console.error('操作失败', e);
+    }
+}
+
+async function resBatchSetTemperature(temperature) {
+    if (!resSerialConnected) {
+        alert('请先连接串口');
+        return;
+    }
+
+    const sns = Array.from(selectedDevices);
+    if (sns.length === 0) {
+        alert('请先选择设备');
+        return;
+    }
+
+    const tempValue = Number(temperature);
+    if (Number.isNaN(tempValue)) {
+        return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    for (const sn of sns) {
+        try {
+            const res = await fetch('/api/res/device_temp', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({sn: sn, temperature: tempValue})
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || '按温度设置失败');
+            }
+
+            const {resistanceText, temperatureText} = applyResDeviceStatus(sn, data);
+            appendResLog(sn, 'temp', resistanceText, temperatureText);
+            successCount += 1;
+        } catch (e) {
+            failCount += 1;
+            console.error(`设备 ${sn} 按温度设置失败`, e);
+        }
+    }
+
+    if (failCount === 0) {
+        showToast(`已为 ${successCount} 台设备设置 ${tempValue}℃`, 'success', 3000);
+    } else {
+        showToast(`温度设置完成：成功 ${successCount} 台，失败 ${failCount} 台`, 'info', 3600);
     }
 }
 
@@ -514,46 +661,56 @@ async function resSetDeviceValue(sn, type) {
             }
         }
 
-        const device = devices.find(d => d.sn === sn);
-        const deviceName = device ? device.name : sn;
-        const resistanceText = data.current_resistance || '--';
-        const temperatureText = data.current_temperature_display || '--';
-
-        // 立即更新卡片显示（不依赖定时轮询）
-        const target = devices.find(d => d.sn === sn);
-        if (target) {
-            target.current_resistance = resistanceText;
-            target.current_temperature_display = temperatureText;
-            if (typeof data.current_temperature !== 'undefined') {
-                target.current_temperature = data.current_temperature;
-            }
-            target.connected = true;
-        }
-        const displayREl = document.getElementById(`res-display-r-${sn}`);
-        const displayTEl = document.getElementById(`res-display-t-${sn}`);
-        if (displayREl) {
-            displayREl.textContent = resistanceText;
-        }
-        if (displayTEl) {
-            displayTEl.textContent = `T: ${temperatureText}`;
-        }
-
-        const logValueText = type === 'temp'
-            ? `T=${temperatureText} (${resistanceText})`
-            : `R=${resistanceText}`;
-
-        const logEl = document.getElementById('res-log');
-        if (logEl) {
-            const time = new Date().toLocaleTimeString();
-            const line = document.createElement('div');
-            line.textContent = `[${time}] ${deviceName}: ${logValueText}`;
-            line.style.marginTop = '3px';
-            logEl.appendChild(line);
-            logEl.scrollTop = logEl.scrollHeight;
-        }
+        const {resistanceText, temperatureText} = applyResDeviceStatus(sn, data);
+        appendResLog(sn, type, resistanceText, temperatureText);
     } catch (e) {
         console.error('设置失败', e);
     }
+}
+
+function applyResDeviceStatus(sn, data) {
+    const resistanceText = data.current_resistance || '--';
+    const temperatureText = data.current_temperature_display || '--';
+
+    const target = devices.find(d => d.sn === sn);
+    if (target) {
+        target.current_resistance = resistanceText;
+        target.current_temperature_display = temperatureText;
+        if (typeof data.current_temperature !== 'undefined') {
+            target.current_temperature = data.current_temperature;
+        }
+        target.connected = true;
+    }
+
+    const displayREl = document.getElementById(`res-display-r-${sn}`);
+    const displayTEl = document.getElementById(`res-display-t-${sn}`);
+    if (displayREl) {
+        displayREl.textContent = resistanceText;
+    }
+    if (displayTEl) {
+        displayTEl.textContent = `T: ${temperatureText}`;
+    }
+
+    return {resistanceText, temperatureText};
+}
+
+function appendResLog(sn, type, resistanceText, temperatureText) {
+    const device = devices.find(d => d.sn === sn);
+    const deviceName = device ? device.name : sn;
+    const logValueText = type === 'temp'
+        ? `T=${temperatureText} (${resistanceText})`
+        : `R=${resistanceText}`;
+
+    const logEl = document.getElementById('res-log');
+    if (!logEl) {
+        return;
+    }
+    const time = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.textContent = `[${time}] ${deviceName}: ${logValueText}`;
+    line.style.marginTop = '3px';
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
 }
 
 // 保存设备顺序到后端

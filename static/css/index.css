@@ -109,6 +109,27 @@ h1 {
     flex-wrap: wrap;
 }
 
+.res-quick-temp-group {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.res-quick-temp-label {
+    color: #718096;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+    .res-quick-temp-group {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
 .btn {
     padding: 10px 20px;
     border: none;
