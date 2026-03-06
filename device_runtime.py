@@ -251,15 +251,20 @@ class ResistanceController:
 
             result, msg = self._run_serial_task(_do_set_value, timeout=4.5)
             if result:
-                state.resistance_value = value
+                # 设备会返回设置后的电阻值，优先使用返回值；解析失败时回退到请求值
+                actual_value = self._parse_resistance_from_response(msg)
+                if actual_value is None:
+                    actual_value = value
+
+                state.resistance_value = actual_value
                 # 更新设备状态
                 if sn and sn in self.devices:
-                    self.devices[sn].current_resistance = f"{int(value)}Ω"
+                    self.devices[sn].current_resistance = format_resistance_display(actual_value)
                     self.devices[sn].connected = True
                     # 更新列表中的设备
                     for d in self.devices_list:
                         if d.sn == sn:
-                            d.current_resistance = f"{int(value)}Ω"
+                            d.current_resistance = format_resistance_display(actual_value)
                             d.connected = True
                             break
             return result, msg

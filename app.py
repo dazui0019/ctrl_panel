@@ -268,7 +268,6 @@ def res_set_device_value():
     success, msg = res_controller.set_value(value, sn)
 
     if success and sn in res_controller.devices:
-        res_controller.devices[sn].current_resistance = f"{int(float(value))}Ω"
         status = build_res_device_status(res_controller.devices[sn])
         return jsonify({"success": True, "message": msg, **status})
 
@@ -304,7 +303,6 @@ def res_set_device_temp():
     success, msg = res_controller.set_value(resistance, sn)
 
     if success and sn in res_controller.devices:
-        res_controller.devices[sn].current_resistance = f"{resistance}Ω"
         status = build_res_device_status(res_controller.devices[sn])
         return jsonify({
             "success": True,

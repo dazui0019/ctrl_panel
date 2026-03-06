@@ -1,8 +1,5 @@
 let scopeRefreshTimer = null;
 let powerRefreshTimer = null;
-let resValueRefreshTimer = null;
-let resValueRefreshInProgress = false;
-let resValueAutoRefreshEnabled = false;
 let scopeConnected = false;
 let scopeChannelStates = {1: false, 2: false, 3: false, 4: false};  // 通道开关状态
 let powerConnected = false;
@@ -94,7 +91,7 @@ async function updateDeviceStates() {
             document.getElementById('res-title-status').textContent = '串口已连接';
             // 加载设备列表
             await resLoadDevices();
-            startResValueAutoRefresh();
+            await resRefreshDeviceValuesOnce();
         }
 
         // 电源
@@ -180,7 +177,7 @@ async function resSerialConnect() {
             document.getElementById('res-port').disabled = true;
             // 加载设备列表
             await resLoadDevices();
-            startResValueAutoRefresh();
+            await resRefreshDeviceValuesOnce();
         } else {
             alert('连接失败: ' + data.message);
         }
@@ -201,7 +198,6 @@ async function resSerialDisconnect() {
             document.getElementById('res-title-status').textContent = '';
             document.getElementById('btn-res-serial-connect').textContent = '连接';
             document.getElementById('res-port').disabled = false;
-            stopResValueAutoRefresh();
             // 清空设备列表
             devices = [];
             renderDevices();
@@ -252,28 +248,15 @@ async function resLoadDevices() {
     }
 }
 
-async function resRefreshDeviceValues() {
-    if (!resValueAutoRefreshEnabled || !resSerialConnected) {
+async function resRefreshDeviceValuesOnce() {
+    if (!resSerialConnected || devices.length === 0) {
         return;
     }
-    if (resValueRefreshInProgress) {
-        scheduleResValueRefresh(300);
-        return;
-    }
-    if (devices.length === 0) {
-        scheduleResValueRefresh(1000);
-        return;
-    }
-
-    resValueRefreshInProgress = true;
-    const beginAt = performance.now();
-    let nextDelayMs = 1000;
 
     try {
         const res = await fetch('/api/res/device_values');
         const data = await res.json();
         if (!res.ok || !data.success || !Array.isArray(data.devices)) {
-            nextDelayMs = 1500;
             return;
         }
 
@@ -290,50 +273,9 @@ async function resRefreshDeviceValues() {
                 displayTEl.textContent = `T: ${device.current_temperature_display || '--'}`;
             }
         }
-
-        const elapsedMs = performance.now() - beginAt;
-        const deviceCount = data.devices.length;
-        nextDelayMs = calcResValueRefreshDelayMs(deviceCount, elapsedMs);
     } catch (e) {
         console.error('刷新电阻值失败', e);
-        nextDelayMs = 2000;
-    } finally {
-        resValueRefreshInProgress = false;
-        scheduleResValueRefresh(nextDelayMs);
     }
-}
-
-function calcResValueRefreshDelayMs(deviceCount, elapsedMs) {
-    const minInterval = 1000;
-    const estimatedSerialCost = Math.max(minInterval, deviceCount * 320 + 200);
-    const elapsedCost = Math.ceil(elapsedMs) + 120;
-    return Math.max(minInterval, estimatedSerialCost, elapsedCost);
-}
-
-function scheduleResValueRefresh(delayMs) {
-    if (!resValueAutoRefreshEnabled || !resSerialConnected) {
-        return;
-    }
-    if (resValueRefreshTimer) {
-        clearTimeout(resValueRefreshTimer);
-        resValueRefreshTimer = null;
-    }
-    resValueRefreshTimer = setTimeout(resRefreshDeviceValues, delayMs);
-}
-
-function startResValueAutoRefresh() {
-    stopResValueAutoRefresh();
-    resValueAutoRefreshEnabled = true;
-    scheduleResValueRefresh(80);
-}
-
-function stopResValueAutoRefresh() {
-    resValueAutoRefreshEnabled = false;
-    if (resValueRefreshTimer) {
-        clearTimeout(resValueRefreshTimer);
-        resValueRefreshTimer = null;
-    }
-    resValueRefreshInProgress = false;
 }
 
 // 渲染设备列表
@@ -477,6 +419,7 @@ async function resAddDevice() {
             document.getElementById('res-device-name').value = '';
             document.getElementById('res-device-sn').value = '';
             await resLoadDevices();
+            await resRefreshDeviceValuesOnce();
         } else {
             alert(data.message);
         }
@@ -575,6 +518,26 @@ async function resSetDeviceValue(sn, type) {
         const deviceName = device ? device.name : sn;
         const resistanceText = data.current_resistance || '--';
         const temperatureText = data.current_temperature_display || '--';
+
+        // 立即更新卡片显示（不依赖定时轮询）
+        const target = devices.find(d => d.sn === sn);
+        if (target) {
+            target.current_resistance = resistanceText;
+            target.current_temperature_display = temperatureText;
+            if (typeof data.current_temperature !== 'undefined') {
+                target.current_temperature = data.current_temperature;
+            }
+            target.connected = true;
+        }
+        const displayREl = document.getElementById(`res-display-r-${sn}`);
+        const displayTEl = document.getElementById(`res-display-t-${sn}`);
+        if (displayREl) {
+            displayREl.textContent = resistanceText;
+        }
+        if (displayTEl) {
+            displayTEl.textContent = `T: ${temperatureText}`;
+        }
+
         const logValueText = type === 'temp'
             ? `T=${temperatureText} (${resistanceText})`
             : `R=${resistanceText}`;

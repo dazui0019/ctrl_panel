@@ -75,6 +75,7 @@ POST /api/res/devices/order
 说明：
 
 - `/api/res/device_values` 内部逐个 SN 查询并回填 `current_resistance`。
+- `/api/res/device_value` 与 `/api/res/device_temp` 会优先使用设备设置指令返回的电阻值更新 `current_resistance`。
 - 设备温度显示由后端通过 NTC 反查得到，超出 `-40℃~150℃` 显示 `--`。
 - 返回字段中包含 `current_temperature_display`（如 `10℃` 或 `--`）。
 
@@ -172,8 +173,8 @@ POST /api/res/devices/order
 
 ## 前端相关约定
 
-- 电阻卡片显示值由 `/api/res/device_values` 轮询结果驱动。
-- 手动设置电阻后不会立即改卡片，等待下一次读取更新。
+- 电阻卡片值在这些时机单次读取：页面刷新且串口已连接、刚连接串口、创建设备后。
+- 手动设置电阻/温度后，前端直接使用接口返回值立即更新卡片显示。
 - 设置日志格式：
   - 温度设置：`T=10℃ (94630Ω)`
   - 直接电阻：`R=94630Ω`
