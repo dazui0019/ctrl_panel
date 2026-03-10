@@ -42,6 +42,20 @@ uv run python app.py
 
 然后在浏览器打开: http://127.0.0.1:5000
 
+### 后台启动/停止脚本
+
+```bash
+# 后台启动（日志写入 .ctrl_panel.log，PID 写入 .ctrl_panel.pid）
+./start.sh
+
+# 停止
+./stop.sh
+```
+
+说明：
+- `start.sh` 会在端口已被本项目进程占用时直接复用，并自动修复 PID 文件。
+- `stop.sh` 在 PID 文件缺失时也会按端口自动查找并停止本项目进程。
+
 ### HTTPS（用于浏览器剪贴板）
 
 开发环境可直接启用临时证书：
