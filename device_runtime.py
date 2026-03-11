@@ -19,6 +19,14 @@ SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+
+def empty_scope_channel_states():
+    return {f"ch{ch}": False for ch in range(1, 5)}
+
+
+def empty_scope_channel_values():
+    return {f"ch{ch}": None for ch in range(1, 5)}
+
 # ========== 全局状态 ==========
 class DeviceState:
     """设备状态管理"""
@@ -27,14 +35,19 @@ class DeviceState:
         self.resistance_port = None
         self.resistance_value = None
 
+        self.power_connected = False
         self.power_address = None
         self.power_voltage = None
         self.power_current = None
         self.power_output = False
 
         self.scope_serial = "90Y701585"
+        self.scope_connected = False
         self.scope_remote_locked = False
+        self.scope_expected_connected = False
         self.scope_channels = []  # 用户选择的通道列表
+        self.scope_channel_states = empty_scope_channel_states()
+        self.scope_channel_values = empty_scope_channel_values()
         self.scope_refresh_interval = 1000  # ms
         self.scope_auto_refresh = False  # 自动刷新开关
         self.scope_mean_value = None
@@ -612,24 +625,60 @@ class PowerController:
         """过滤不希望在电源下拉框展示的 VISA 资源"""
         return str(resource).upper().startswith("ASRL")
 
+    def _list_resources_isolated(self):
+        script = """
+import json
+
+try:
+    import pyvisa
+except Exception:
+    print("[]")
+    raise SystemExit(0)
+
+rm = None
+try:
+    rm = pyvisa.ResourceManager()
+    print(json.dumps(list(rm.list_resources())))
+except Exception:
+    print("[]")
+finally:
+    if rm is not None:
+        try:
+            rm.close()
+        except Exception:
+            pass
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "").strip() or "列出 VISA 资源失败")
+
+        output = (result.stdout or "").strip()
+        if not output:
+            return []
+
+        try:
+            resources = json.loads(output)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"解析 VISA 资源失败: {e}") from e
+
+        if not isinstance(resources, list):
+            return []
+        return [str(resource) for resource in resources]
+
     def list_resources(self):
         """列出可用 VISA 资源"""
-        rm = None
         try:
-            import pyvisa
-
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
+            resources = self._list_resources_isolated()
             visible = [r for r in resources if not self._should_hide_resource(r)]
             return [self._build_resource_item(r) for r in visible]
-        except Exception:
+        except Exception as e:
+            print(f"列出电源 VISA 资源失败: {e}")
             return []
-        finally:
-            try:
-                if rm:
-                    rm.close()
-            except Exception:
-                pass
 
     def _close_locked(self):
         if self.ps:
@@ -647,10 +696,12 @@ class PowerController:
             self.ps = PowerSupplyController(address, verbose=False)
             self.ps.connect()
             self.address = address
+            state.power_connected = True
             state.power_address = address
             return True, "连接成功"
         except Exception as e:
             self.ps = None
+            state.power_connected = False
             return False, str(e)
 
     def connect(self, address):
@@ -662,6 +713,8 @@ class PowerController:
         """断开电源"""
         with self.io_lock:
             self._close_locked()
+            self.address = None
+            state.power_connected = False
 
     def _measure_locked(self):
         if not self.ps:
@@ -746,28 +799,45 @@ class ScopeController:
         self.inst = None
         self.device_id = None
         self.serial_num = None
+        self.connection_lock = threading.RLock()
         self.io_lock = threading.Lock()
+
+    def _log(self, message, serial_num=None, backend=None, device_id=None):
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        serial_text = serial_num or self.serial_num or state.scope_serial or "-"
+        backend_text = backend or self.backend or "-"
+        device_text = device_id or self.device_id or "-"
+        print(
+            f"[{timestamp}] [scope] serial={serial_text} backend={backend_text} "
+            f"device={device_text} {message}"
+        )
 
     def connect(self, serial_num="90Y701585"):
         """连接示波器"""
-        serial_num = str(serial_num or "90Y701585").strip()
-        self.disconnect()
+        with self.connection_lock:
+            serial_num = str(serial_num or "90Y701585").strip()
+            self._log("开始连接示波器", serial_num=serial_num)
+            self.disconnect()
 
-        # Windows 优先 tmctl，Linux 优先 pyvisa
-        if os.name == "nt":
-            backends = [("tmctl", self._connect_tmctl), ("pyvisa", self._connect_pyvisa)]
-        else:
-            backends = [("pyvisa", self._connect_pyvisa), ("tmctl", self._connect_tmctl)]
+            # Windows 优先 tmctl，Linux 优先 pyvisa
+            if os.name == "nt":
+                backends = [("tmctl", self._connect_tmctl), ("pyvisa", self._connect_pyvisa)]
+            else:
+                backends = [("pyvisa", self._connect_pyvisa), ("tmctl", self._connect_tmctl)]
 
-        errors = []
-        for name, connect_func in backends:
-            ok, msg = connect_func(serial_num)
-            if ok:
-                return True, msg
-            errors.append(f"{name}: {msg}")
+            errors = []
+            for name, connect_func in backends:
+                self._log(f"尝试使用 {name} 连接", serial_num=serial_num, backend=name)
+                ok, msg = connect_func(serial_num)
+                if ok:
+                    self._log("连接成功", serial_num=serial_num)
+                    return True, msg
+                self._log(f"{name} 连接失败: {msg}", serial_num=serial_num, backend=name)
+                errors.append(f"{name}: {msg}")
 
-        self._clear_connection_state()
-        return False, " ; ".join(errors) if errors else "连接失败"
+            self._clear_connection_state()
+            self._log("所有后端连接均失败", serial_num=serial_num, backend="-", device_id="-")
+            return False, " ; ".join(errors) if errors else "连接失败"
 
     def _clear_connection_state(self):
         self.backend = None
@@ -777,26 +847,118 @@ class ScopeController:
         self.device_id = None
         self.serial_num = None
 
-    def _reconnect_current_session(self):
-        serial_num = self.serial_num or state.scope_serial
-        if not serial_num:
-            return False
+    def _invalidate_session_locked(self, reason=None):
+        if reason:
+            self._log(reason)
 
-        was_locked = state.scope_remote_locked
-        success, msg = self.connect(serial_num)
-        if not success:
-            print(f"示波器自动重连失败: {msg}")
+        if self.backend == "tmctl" and self.device_id is not None:
+            try:
+                self.tmctl.SetRen(self.device_id, 0)
+            except Exception:
+                pass
+            try:
+                self.tmctl.Finish(self.device_id)
+            except Exception:
+                pass
+        elif self.backend == "pyvisa":
+            try:
+                if self.inst:
+                    self.inst.close()
+            except Exception:
+                pass
+            try:
+                if self.rm:
+                    self.rm.close()
+            except Exception:
+                pass
+
+        self._clear_connection_state()
+
+    def _reconnect_current_session(self, force=False):
+        with self.connection_lock:
+            serial_num = self.serial_num or state.scope_serial
+            if not serial_num:
+                self._log("缺少序列号，无法自动重连", serial_num="-")
+                return False
+
+            if self.device_id is not None:
+                if not force:
+                    return True
+                self._invalidate_session_locked("示波器会话已失效，准备强制重连")
+
+            was_locked = state.scope_remote_locked
+            self._log(
+                f"开始自动重连 (force={force}, locked={was_locked})",
+                serial_num=serial_num
+            )
+            success, msg = self.connect(serial_num)
+            if not success:
+                self._log(f"自动重连失败: {msg}", serial_num=serial_num)
+                return False
+
+            try:
+                if was_locked:
+                    self.lock_remote()
+                else:
+                    self.unlock_local()
+            except Exception as e:
+                self._log(f"自动重连后恢复本地/远程状态失败: {e}", serial_num=serial_num)
+
+            self._log(
+                f"自动重连成功，恢复为{'远程锁定' if was_locked else '本地可控'}",
+                serial_num=serial_num
+            )
+
+            return True
+
+    def _is_session_alive_locked(self):
+        if self.device_id is None:
             return False
 
         try:
-            if was_locked:
-                self.lock_remote()
-            else:
-                self.unlock_local()
+            with self.io_lock:
+                response = self._query_scpi("*STB?", buf_size=64)
+            response_text = str(response).strip()
+            int(response_text)
+            return True
         except Exception as e:
-            print(f"示波器自动重连后恢复本地/远程状态失败: {e}")
+            self._log(f"连接健康检查失败: {e}")
+            self._invalidate_session_locked("示波器健康检查失败，当前会话已作废")
+            return False
 
-        return True
+    def ensure_connected(self, validate=False):
+        with self.connection_lock:
+            if self.device_id is not None:
+                if not validate:
+                    return True
+                if self._is_session_alive_locked():
+                    return True
+                return self._reconnect_current_session(force=True)
+            if not state.scope_expected_connected:
+                return False
+            return self._reconnect_current_session()
+
+    def recover_connection(self):
+        with self.connection_lock:
+            if not state.scope_expected_connected:
+                return False
+            return self._reconnect_current_session(force=True)
+
+    def _retry_after_reconnect(self, label, action):
+        try:
+            return action()
+        except Exception as e:
+            print(f"{label}失败，准备重连后重试: {e}")
+            if not self.recover_connection():
+                self._invalidate_session_locked(f"{label}失败，自动重连未成功")
+                raise
+
+            try:
+                return action()
+            except Exception as retry_error:
+                print(f"{label}重连后仍失败: {retry_error}")
+                self._invalidate_session_locked(f"{label}重连后仍失败，当前会话已清理")
+                raise
 
     def _connect_tmctl(self, serial_num):
         """使用 Yokogawa tmctl DLL 连接（主要用于 Windows）"""
@@ -942,30 +1104,12 @@ class ScopeController:
 
     def disconnect(self):
         """断开示波器"""
-        if self.backend == "tmctl" and self.device_id is not None:
-            try:
-                self.tmctl.SetRen(self.device_id, 0)
-                self.tmctl.Finish(self.device_id)
-            except Exception:
-                pass
-        elif self.backend == "pyvisa":
-            try:
-                if self.inst:
-                    self.inst.close()
-            except Exception:
-                pass
-            try:
-                if self.rm:
-                    self.rm.close()
-            except Exception:
-                pass
+        with self.connection_lock:
+            if self.device_id is not None or self.backend is not None:
+                self._log("断开示波器连接")
+            self._invalidate_session_locked()
 
-        self._clear_connection_state()
-
-    def unlock_local(self):
-        """解锁示波器本地控制（保持连接）"""
-        if self.device_id is None:
-            return
+    def _unlock_local_locked(self):
         with self.io_lock:
             # Yokogawa 通讯手册中远程/本地切换使用 :COMMunicate:REMote ON/OFF。
             self._send_scpi(":COMMunicate:REMote OFF")
@@ -983,10 +1127,7 @@ class ScopeController:
                 except Exception:
                     pass
 
-    def lock_remote(self):
-        """锁定示波器为远程控制（保持连接）"""
-        if self.device_id is None:
-            return
+    def _lock_remote_locked(self):
         with self.io_lock:
             self._send_scpi(":COMMunicate:REMote ON")
 
@@ -1003,82 +1144,86 @@ class ScopeController:
                 except Exception:
                     pass
 
-    def set_channel(self, channel, enable):
-        """设置通道开关"""
-        if self.device_id is None:
-            return False, "示波器未连接"
+    def _set_channel_locked(self, channel, enable):
+        with self.io_lock:
+            cmd = f":CHANnel{channel}:DISPlay {'ON' if enable else 'OFF'}"
+            self._send_scpi(cmd)
 
-        try:
-            with self.io_lock:
-                cmd = f":CHANnel{channel}:DISPlay {'ON' if enable else 'OFF'}"
-                self._send_scpi(cmd)
-            return True, "设置成功"
-        except Exception as e:
-            return False, str(e)
+    def _get_channel_state_locked(self, channel):
+        with self.io_lock:
+            cmd = f":CHANnel{channel}:DISPlay?"
+            buf_str = self._query_scpi(cmd, buf_size=1000).upper()
+        return buf_str in ['1', 'ON']
 
-    def get_channel_state(self, channel):
-        """获取通道开关状态"""
-        if self.device_id is None:
+    def _get_mean_locked(self, channel):
+        with self.io_lock:
+            cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
+            buf_str = self._query_scpi(cmd, buf_size=1000)
+
+        buf_str = buf_str.strip()
+        if buf_str.upper() == 'NAN':
             return None
 
         try:
-            with self.io_lock:
-                cmd = f":CHANnel{channel}:DISPlay?"
-                buf_str = self._query_scpi(cmd, buf_size=1000).upper()
-            return buf_str in ['1', 'ON']
-        except Exception as e:
-            print(f"示波器读取通道状态失败，准备重连后重试: {e}")
-            if not self._reconnect_current_session():
-                return None
+            return float(buf_str) * 1000.0  # 转换为毫伏/毫安
+        except ValueError:
+            return None
+
+    def unlock_local(self):
+        """解锁示波器本地控制（保持连接）"""
+        with self.connection_lock:
+            if not self.ensure_connected():
+                raise RuntimeError("示波器未连接")
+            self._retry_after_reconnect("示波器解锁本地控制", self._unlock_local_locked)
+
+    def lock_remote(self):
+        """锁定示波器为远程控制（保持连接）"""
+        with self.connection_lock:
+            if not self.ensure_connected():
+                raise RuntimeError("示波器未连接")
+            self._retry_after_reconnect("示波器锁定远程控制", self._lock_remote_locked)
+
+    def set_channel(self, channel, enable):
+        """设置通道开关"""
+        with self.connection_lock:
+            if not self.ensure_connected():
+                return False, "示波器未连接"
+
             try:
-                with self.io_lock:
-                    cmd = f":CHANnel{channel}:DISPlay?"
-                    buf_str = self._query_scpi(cmd, buf_size=1000).upper()
-                return buf_str in ['1', 'ON']
-            except Exception as retry_error:
-                print(f"示波器重连后读取通道状态仍失败: {retry_error}")
+                self._retry_after_reconnect(
+                    "示波器设置通道",
+                    lambda: self._set_channel_locked(channel, enable)
+                )
+                return True, "设置成功"
+            except Exception as e:
+                return False, str(e)
+
+    def get_channel_state(self, channel):
+        """获取通道开关状态"""
+        with self.connection_lock:
+            if not self.ensure_connected():
+                return None
+
+            try:
+                return self._retry_after_reconnect(
+                    "示波器读取通道状态",
+                    lambda: self._get_channel_state_locked(channel)
+                )
+            except Exception:
                 return None
 
     def get_mean(self, channel=1):
         """获取通道平均值（不暂停示波器）"""
-        if self.device_id is None:
-            return None
-
-        try:
-            # 查询
-            with self.io_lock:
-                cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
-                buf_str = self._query_scpi(cmd, buf_size=1000)
+        with self.connection_lock:
+            if not self.ensure_connected():
+                return None
 
             try:
-                # 清理响应字符串（去除换行符、空格等）
-                buf_str = buf_str.strip()
-                # 检查是否是 NAN
-                if buf_str.upper() == 'NAN':
-                    return None
-                val = float(buf_str) * 1000.0  # 转换为毫伏/毫安
-                return val
-            except ValueError:
-                return None
-        except Exception as e:
-            print(f"示波器读取错误，准备重连后重试: {e}")
-            if not self._reconnect_current_session():
-                return None
-            try:
-                with self.io_lock:
-                    cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
-                    buf_str = self._query_scpi(cmd, buf_size=1000)
-
-                try:
-                    buf_str = buf_str.strip()
-                    if buf_str.upper() == 'NAN':
-                        return None
-                    val = float(buf_str) * 1000.0
-                    return val
-                except ValueError:
-                    return None
-            except Exception as retry_error:
-                print(f"示波器重连后读取仍失败: {retry_error}")
+                return self._retry_after_reconnect(
+                    "示波器读取均值",
+                    lambda: self._get_mean_locked(channel)
+                )
+            except Exception:
                 return None
 
     def get_all_means(self, channels=[1, 2, 3, 4]):
@@ -1096,14 +1241,20 @@ class ScopeController:
 
     def get_screenshot(self):
         """获取示波器 PNG 截图数据"""
-        if self.device_id is None:
-            return False, "示波器未连接", None
+        with self.connection_lock:
+            if not self.ensure_connected():
+                return False, "示波器未连接", None
 
-        if self.backend == "tmctl":
-            return self._get_screenshot_tmctl()
-        if self.backend == "pyvisa":
-            return self._get_screenshot_pyvisa()
-        return False, "未知后端", None
+            try:
+                if self.backend == "tmctl":
+                    return self._get_screenshot_tmctl()
+                if self.backend == "pyvisa":
+                    return self._get_screenshot_pyvisa()
+                return False, "未知后端", None
+            except Exception as e:
+                print(f"示波器截图失败，准备重连后重试: {e}")
+                self._invalidate_session_locked("示波器截图失败，当前会话已作废")
+                return False, str(e), None
 
     def _get_screenshot_tmctl(self):
         with self.io_lock:
@@ -1324,3 +1475,172 @@ class ScopeController:
 
 
 scope_controller = ScopeController()
+
+
+class DeviceMonitor:
+    """后台设备监控，持续维护连接状态和采集缓存。"""
+
+    POWER_INTERVAL = 1.0
+    RESISTANCE_INTERVAL = 0.8
+    MIN_SCOPE_INTERVAL = 0.25
+    IDLE_WAIT = 0.2
+
+    def __init__(self):
+        self._wake_event = threading.Event()
+        self._resistance_index = 0
+        self._thread = threading.Thread(
+            target=self._run,
+            name="device-monitor",
+            daemon=True
+        )
+        self._thread.start()
+
+    def request_refresh(self):
+        self._wake_event.set()
+
+    def refresh_power_now(self):
+        state.power_connected = power_controller.ps is not None
+        if not state.power_connected:
+            state.power_voltage = None
+            state.power_current = None
+            return
+
+        try:
+            result = power_controller.measure()
+        except Exception as e:
+            print(f"后台刷新电源缓存失败: {e}")
+            result = None
+
+        state.power_connected = power_controller.ps is not None
+        if result is None and not state.power_connected:
+            state.power_voltage = None
+            state.power_current = None
+
+    def refresh_scope_now(self):
+        previous_states = dict(getattr(state, "scope_channel_states", empty_scope_channel_states()))
+        channel_states = empty_scope_channel_states()
+        channel_values = empty_scope_channel_values()
+
+        if not state.scope_expected_connected:
+            state.scope_connected = False
+            state.scope_channel_states = channel_states
+            state.scope_channel_values = channel_values
+            state.scope_mean_value = channel_values
+            return
+
+        try:
+            connected = scope_controller.ensure_connected(validate=True)
+        except Exception as e:
+            print(f"后台刷新示波器连接状态失败: {e}")
+            connected = False
+
+        state.scope_connected = bool(connected)
+        if not connected:
+            state.scope_channel_states = channel_states
+            state.scope_channel_values = channel_values
+            state.scope_mean_value = channel_values
+            return
+
+        for ch in range(1, 5):
+            key = f"ch{ch}"
+            try:
+                enabled = scope_controller.get_channel_state(ch)
+            except Exception as e:
+                print(f"后台读取示波器 CH{ch} 状态失败: {e}")
+                enabled = None
+
+            if isinstance(enabled, bool):
+                channel_states[key] = enabled
+            else:
+                channel_states[key] = bool(previous_states.get(key, False))
+
+            if not channel_states[key]:
+                continue
+
+            try:
+                channel_values[key] = scope_controller.get_mean(ch)
+            except Exception as e:
+                print(f"后台读取示波器 CH{ch} 均值失败: {e}")
+                channel_values[key] = None
+
+        state.scope_channels = [
+            int(key[2:]) for key, enabled in channel_states.items() if enabled
+        ]
+        state.scope_channel_states = channel_states
+        state.scope_channel_values = channel_values
+        state.scope_mean_value = channel_values
+
+    def refresh_resistance_now(self, full=False):
+        state.resistance_connected = res_controller.connected
+        if not res_controller.connected:
+            return
+
+        devices = list(res_controller.devices_list)
+        if not devices:
+            self._resistance_index = 0
+            return
+
+        if full:
+            self._resistance_index = 0
+            target_devices = devices
+        else:
+            if self._resistance_index >= len(devices):
+                self._resistance_index = 0
+            target_devices = [devices[self._resistance_index]]
+            self._resistance_index = (self._resistance_index + 1) % len(devices)
+
+        for device in target_devices:
+            try:
+                res_controller.get_value(device.sn)
+            except Exception as e:
+                print(f"后台读取电阻设备 {device.sn} 失败: {e}")
+
+    def _scope_interval_seconds(self):
+        interval_ms = getattr(state, "scope_refresh_interval", 1000) or 1000
+        try:
+            return max(self.MIN_SCOPE_INTERVAL, float(interval_ms) / 1000.0)
+        except Exception:
+            return 1.0
+
+    def _run(self):
+        next_scope = 0.0
+        next_power = 0.0
+        next_resistance = 0.0
+
+        while True:
+            now = time.monotonic()
+
+            if now >= next_scope:
+                try:
+                    self.refresh_scope_now()
+                except Exception as e:
+                    print(f"示波器后台监控异常: {e}")
+                next_scope = time.monotonic() + self._scope_interval_seconds()
+
+            if now >= next_power:
+                try:
+                    self.refresh_power_now()
+                except Exception as e:
+                    print(f"电源后台监控异常: {e}")
+                next_power = time.monotonic() + self.POWER_INTERVAL
+
+            if now >= next_resistance:
+                try:
+                    self.refresh_resistance_now()
+                except Exception as e:
+                    print(f"电阻后台监控异常: {e}")
+                next_resistance = time.monotonic() + self.RESISTANCE_INTERVAL
+
+            timeout = min(next_scope, next_power, next_resistance) - time.monotonic()
+            if timeout < self.IDLE_WAIT:
+                timeout = self.IDLE_WAIT
+
+            self._wake_event.wait(timeout)
+            if self._wake_event.is_set():
+                self._wake_event.clear()
+                next_scope = 0.0
+                next_power = 0.0
+                next_resistance = 0.0
+
+
+device_monitor = DeviceMonitor()

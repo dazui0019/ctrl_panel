@@ -159,12 +159,11 @@ async function initApp() {
     initGlobalListeners();
     prepareStaticUi();
     initResQuickTemps();
+    await syncDeviceStates();
 
     if (appState.page === 'device-management') {
         await Promise.all([resRefreshPorts(), powerRefreshResources()]);
     }
-
-    await syncDeviceStates();
 }
 
 function initGlobalListeners() {
@@ -318,7 +317,9 @@ function applyPowerState(data) {
     }
 
     setText('power-resource-label', data.address || '--');
-    if (!appState.powerConnected) {
+    if (appState.powerConnected && typeof data.voltage === 'number' && typeof data.current === 'number') {
+        setText('power-measure', `${data.voltage.toFixed(4)} V, ${data.current.toFixed(4)} A`);
+    } else if (!appState.powerConnected) {
         setText('power-measure', '-- V, -- A');
     }
 
@@ -348,6 +349,25 @@ function applyScopeState(data) {
         setValue('scope-interval', data.refresh_interval);
     }
 
+    if (data.channel_states && typeof data.channel_states === 'object') {
+        const nextChannelStates = {1: false, 2: false, 3: false, 4: false};
+        for (let channel = 1; channel <= 4; channel += 1) {
+            if (typeof data.channel_states[`ch${channel}`] === 'boolean') {
+                nextChannelStates[channel] = data.channel_states[`ch${channel}`];
+            }
+        }
+        appState.scopeChannelStates = nextChannelStates;
+    } else if (Array.isArray(data.channels)) {
+        const nextChannelStates = {1: false, 2: false, 3: false, 4: false};
+        data.channels.forEach((channel) => {
+            const num = Number(channel);
+            if (num >= 1 && num <= 4) {
+                nextChannelStates[num] = true;
+            }
+        });
+        appState.scopeChannelStates = nextChannelStates;
+    }
+
     const serialInput = $id('scope-serial');
     if (serialInput) {
         if (data.serial) {
@@ -371,6 +391,32 @@ function applyScopeState(data) {
         appState.scopeChannelStates = {1: false, 2: false, 3: false, 4: false};
         stopAutoRefresh();
         resetScopeChannelDisplays();
+        return;
+    }
+
+    for (let channel = 1; channel <= 4; channel += 1) {
+        updateChannelStyle(channel, Boolean(appState.scopeChannelStates[channel]));
+
+        const valueEl = document.querySelector(`#scope-ch${channel} .ch-value`);
+        if (!valueEl) {
+            continue;
+        }
+
+        if (!appState.scopeChannelStates[channel]) {
+            valueEl.textContent = '--';
+            continue;
+        }
+
+        const rawValue = data.channel_values ? data.channel_values[`ch${channel}`] : null;
+        if (rawValue === null || rawValue === undefined || Number.isNaN(rawValue)) {
+            valueEl.textContent = '--';
+        } else {
+            valueEl.textContent = Number(rawValue).toFixed(3);
+        }
+    }
+
+    if (appState.page === 'workspace') {
+        checkAllChannelsClosed();
     }
 }
 
@@ -1826,7 +1872,10 @@ async function scopeSyncChannelState() {
         const channels = data.channels || {};
 
         for (let channel = 1; channel <= 4; channel += 1) {
-            const enabled = Boolean(channels[`ch${channel}`]);
+            const enabled = channels[`ch${channel}`];
+            if (typeof enabled !== 'boolean') {
+                continue;
+            }
             appState.scopeChannelStates[channel] = enabled;
             updateChannelStyle(channel, enabled);
         }
@@ -1834,6 +1883,7 @@ async function scopeSyncChannelState() {
         checkAllChannelsClosed();
     } catch (error) {
         console.error('获取示波器通道状态失败', error);
+        checkAllChannelsClosed();
     }
 }
 

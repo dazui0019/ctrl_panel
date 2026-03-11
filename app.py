@@ -14,6 +14,7 @@ from device_runtime import (
     res_controller,
     power_controller,
     scope_controller,
+    device_monitor,
     ResistanceDevice,
     build_res_device_status,
 )
@@ -69,9 +70,14 @@ def res_connect():
     """连接串口"""
     data = get_request_data()
     port = data.get('port')
+    if res_controller.connected and port and state.resistance_port == port:
+        return jsonify({"success": True, "message": "串口已连接"})
+
     success, msg = res_controller.connect(port)
     if success:
         state.resistance_connected = True
+        state.resistance_port = port
+        device_monitor.refresh_resistance_now(full=True)
     return jsonify({"success": success, "message": msg})
 
 
@@ -81,6 +87,8 @@ def res_disconnect():
     res_controller.disconnect()
     state.resistance_connected = False
     state.resistance_port = None
+    state.resistance_value = None
+    device_monitor.request_refresh()
     return jsonify({"success": True})
 
 
@@ -105,6 +113,8 @@ def res_action():
     else:
         success, msg = False, "未知操作"
 
+    if success:
+        device_monitor.request_refresh()
     return jsonify({"success": success, "message": msg})
 
 
@@ -129,6 +139,8 @@ def res_device_action():
             success, msg = False, "未知操作"
         results.append({"sn": sn, "success": success, "message": msg})
 
+    if any(item["success"] for item in results):
+        device_monitor.request_refresh()
     return jsonify({"results": results})
 
 
@@ -178,21 +190,14 @@ def res_get_devices():
 
 @app.route('/api/res/device_values', methods=['GET'])
 def res_get_device_values():
-    """批量读取设备当前电阻值（AT+RES.SP?）"""
+    """获取后台缓存的设备当前电阻值"""
     if not res_controller.connected:
         return jsonify({"success": False, "message": "串口未连接"}), 400
 
-    result_devices = []
-    for device in res_controller.devices_list:
-        success, msg, value = res_controller.get_value(device.sn)
-
-        status = build_res_device_status(device)
-        status["read_success"] = success
-        if not success:
-            status["read_message"] = msg
-        result_devices.append(status)
-
-    return jsonify({"success": True, "devices": result_devices})
+    return jsonify({
+        "success": True,
+        "devices": [build_res_device_status(device) for device in res_controller.devices_list]
+    })
 
 
 @app.route('/api/res/devices', methods=['POST'])
@@ -289,6 +294,7 @@ def res_set_device_value():
     success, msg = res_controller.set_value(value, sn)
 
     if success and sn in res_controller.devices:
+        device_monitor.request_refresh()
         status = build_res_device_status(res_controller.devices[sn])
         return jsonify({"success": True, "message": msg, **status})
 
@@ -324,6 +330,7 @@ def res_set_device_temp():
     success, msg = res_controller.set_value(resistance, sn)
 
     if success and sn in res_controller.devices:
+        device_monitor.request_refresh()
         status = build_res_device_status(res_controller.devices[sn])
         return jsonify({
             "success": True,
@@ -354,7 +361,12 @@ def power_connect():
     """连接电源"""
     data = get_request_data()
     address = data.get('address')
+    if state.power_connected and address and state.power_address == address:
+        return jsonify({"success": True, "message": "电源已连接"})
+
     success, msg = power_controller.connect(address)
+    if success:
+        device_monitor.refresh_power_now()
     return jsonify({"success": success, "message": msg})
 
 
@@ -362,7 +374,12 @@ def power_connect():
 def power_disconnect():
     """断开电源"""
     power_controller.disconnect()
+    state.power_connected = False
     state.power_address = None
+    state.power_voltage = None
+    state.power_current = None
+    state.power_output = False
+    device_monitor.request_refresh()
     return jsonify({"success": True})
 
 
@@ -388,15 +405,19 @@ def power_set():
         success, msg = power_controller.set_output(output)
         results.append({"action": "output", "success": success, "message": msg})
 
+    if any(item["success"] for item in results):
+        device_monitor.request_refresh()
     return jsonify({"results": results})
 
 
 @app.route('/api/power/measure', methods=['GET'])
 def power_measure():
-    """测量电源电压电流"""
-    result = power_controller.measure()
-    if result:
-        return jsonify(result)
+    """获取后台缓存的电源电压电流"""
+    if state.power_connected and isinstance(state.power_voltage, (int, float)) and isinstance(state.power_current, (int, float)):
+        return jsonify({
+            "voltage": state.power_voltage,
+            "current": state.power_current
+        })
     return jsonify({"error": "未连接或测量失败"})
 
 
@@ -405,10 +426,24 @@ def power_measure():
 def scope_connect():
     """连接示波器"""
     data = get_request_data()
-    serial = data.get('serial', '90Y701585')
+    serial = str(data.get('serial', state.scope_serial or '90Y701585')).strip()
+    scope_controller._log("收到前端连接请求", serial_num=serial)
+
+    if state.scope_expected_connected and state.scope_serial == serial:
+        if scope_controller.ensure_connected(validate=True):
+            scope_controller._log("前端连接请求命中已连接会话，跳过重连", serial_num=serial)
+            device_monitor.refresh_scope_now()
+            return jsonify({
+                "success": True,
+                "message": "示波器已连接",
+                "locked": state.scope_remote_locked,
+                "already_connected": True,
+            })
+
     success, msg = scope_controller.connect(serial)
     if success:
         state.scope_serial = serial
+        state.scope_expected_connected = True
         locked = False
         try:
             scope_controller.unlock_local()
@@ -416,7 +451,9 @@ def scope_connect():
             locked = True
             msg = f"{msg}; 本地控制解锁失败: {e}"
         state.scope_remote_locked = locked
+        device_monitor.refresh_scope_now()
         return jsonify({"success": True, "message": msg, "locked": locked})
+    state.scope_connected = False
     state.scope_remote_locked = False
     return jsonify({"success": success, "message": msg, "locked": False})
 
@@ -424,8 +461,25 @@ def scope_connect():
 @app.route('/api/scope/disconnect', methods=['POST'])
 def scope_disconnect():
     """断开示波器"""
+    scope_controller._log("收到前端断开请求")
     scope_controller.disconnect()
+    state.scope_connected = False
+    state.scope_expected_connected = False
     state.scope_remote_locked = False
+    state.scope_channel_states = {
+        "ch1": False,
+        "ch2": False,
+        "ch3": False,
+        "ch4": False,
+    }
+    state.scope_channel_values = {
+        "ch1": None,
+        "ch2": None,
+        "ch3": None,
+        "ch4": None,
+    }
+    state.scope_mean_value = state.scope_channel_values
+    state.scope_channels = []
     return jsonify({"success": True})
 
 
@@ -433,8 +487,11 @@ def scope_disconnect():
 def scope_unlock():
     """解锁示波器本地控制（保持连接）"""
     try:
+        if not scope_controller.ensure_connected(validate=True):
+            return jsonify({"success": False, "message": "示波器未连接"})
         scope_controller.unlock_local()
         state.scope_remote_locked = False
+        device_monitor.request_refresh()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -444,8 +501,11 @@ def scope_unlock():
 def scope_lock():
     """锁定示波器为远程控制（保持连接）"""
     try:
+        if not scope_controller.ensure_connected(validate=True):
+            return jsonify({"success": False, "message": "示波器未连接"})
         scope_controller.lock_remote()
         state.scope_remote_locked = True
+        device_monitor.request_refresh()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -469,32 +529,35 @@ def scope_channel():
         return jsonify({"success": False, "message": "无效的通道号"})
 
     success, msg = scope_controller.set_channel(channel, enable)
+    if success:
+        state.scope_channel_states[f"ch{channel}"] = bool(enable)
+        if not enable:
+            state.scope_channel_values[f"ch{channel}"] = None
+        state.scope_channels = [
+            index for index in range(1, 5)
+            if state.scope_channel_states.get(f"ch{index}")
+        ]
+        state.scope_mean_value = state.scope_channel_values
+        device_monitor.request_refresh()
     return jsonify({"success": success, "message": msg})
 
 
 @app.route('/api/scope/channel_state', methods=['GET'])
 def scope_channel_state():
-    """获取所有通道的开关状态"""
-    if scope_controller.device_id is None:
+    """获取后台缓存的所有通道开关状态"""
+    if not state.scope_connected:
         return jsonify({"error": "示波器未连接"})
 
-    states = {}
-    for ch in range(1, 5):
-        state = scope_controller.get_channel_state(ch)
-        states[f"ch{ch}"] = state
-
-    return jsonify({"channels": states})
+    return jsonify({"channels": dict(state.scope_channel_states)})
 
 
 @app.route('/api/scope/get_mean', methods=['GET'])
 def scope_get_mean():
-    """获取所有通道的平均值"""
-    # 返回所有4个通道的数据
-    channels = [1, 2, 3, 4]
-    results = scope_controller.get_all_means(channels)
-    if results:
-        return jsonify({"channels": results})
-    return jsonify({"error": "读取失败"})
+    """获取后台缓存的所有通道平均值"""
+    if not state.scope_connected:
+        return jsonify({"error": "示波器未连接"})
+
+    return jsonify({"channels": dict(state.scope_channel_values)})
 
 
 @app.route('/api/scope/copy_screenshot', methods=['POST'])
@@ -536,6 +599,7 @@ def scope_config():
         state.scope_refresh_interval = int(data['refresh_interval'])
     if 'auto_refresh' in data:
         state.scope_auto_refresh = bool(data['auto_refresh'])
+    device_monitor.request_refresh()
     return jsonify({"success": True, "config": {
         "channels": state.scope_channels,
         "refresh_interval": state.scope_refresh_interval,
@@ -560,22 +624,24 @@ def get_state():
     """获取所有设备状态"""
     return jsonify({
         "resistance": {
-            "connected": res_controller.connected,
-            "port": res_controller.port,
+            "connected": state.resistance_connected,
+            "port": state.resistance_port or res_controller.port,
             "value": state.resistance_value
         },
         "power": {
-            "connected": power_controller.ps is not None,
+            "connected": state.power_connected,
             "address": state.power_address,
             "voltage": state.power_voltage,
             "current": state.power_current,
             "output": state.power_output
         },
         "scope": {
-            "connected": scope_controller.device_id is not None,
+            "connected": state.scope_connected,
             "serial": state.scope_serial,
             "locked": state.scope_remote_locked,
             "channels": state.scope_channels,
+            "channel_states": state.scope_channel_states,
+            "channel_values": state.scope_channel_values,
             "refresh_interval": state.scope_refresh_interval,
             "auto_refresh": state.scope_auto_refresh
         }
