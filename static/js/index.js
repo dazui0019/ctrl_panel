@@ -211,6 +211,7 @@ function prepareStaticUi() {
     updateStatusBadge('scope-title-status', false);
     updateSelectToggleButton();
     renderQuickTempButtons();
+    bindPowerParamInputs();
     togglePowerWorkspaceControls(false);
     toggleScopeWorkspaceControls(false);
     resetScopeChannelDisplays();
@@ -309,9 +310,11 @@ function applyPowerState(data) {
 
     if (typeof data.voltage === 'number' && $id('power-voltage')) {
         setValue('power-voltage', data.voltage);
+        $id('power-voltage').dataset.lastAppliedValue = String(data.voltage);
     }
     if (typeof data.current === 'number' && $id('power-current')) {
         setValue('power-current', data.current);
+        $id('power-current').dataset.lastAppliedValue = String(data.current);
     }
 
     setText('power-resource-label', data.address || '--');
@@ -1424,6 +1427,100 @@ function powerAddressChanged() {
     button.disabled = !appState.powerConnected && !select.value;
 }
 
+function bindPowerParamInputs() {
+    bindPowerParamInput('power-voltage', 'voltage');
+    bindPowerParamInput('power-current', 'current');
+}
+
+function bindPowerParamInput(inputId, field) {
+    const input = $id(inputId);
+    if (!input || input.dataset.bound === '1') {
+        return;
+    }
+
+    input.dataset.bound = '1';
+    input.dataset.lastAppliedValue = input.value;
+    input.dataset.pendingAppliedValue = '';
+
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            powerApplySingleParam(field, input);
+            return;
+        }
+
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            window.requestAnimationFrame(() => {
+                powerApplySingleParam(field, input);
+            });
+        }
+    });
+
+    input.addEventListener('change', () => {
+        powerApplySingleParam(field, input);
+    });
+}
+
+function powerStepParam(inputId, field, direction) {
+    const input = $id(inputId);
+    if (!input) {
+        return;
+    }
+
+    if (direction > 0) {
+        input.stepUp();
+    } else {
+        input.stepDown();
+    }
+
+    powerApplySingleParam(field, input);
+    input.focus({preventScroll: true});
+}
+
+async function powerApplySingleParam(field, input = null) {
+    const target = input || $id(field === 'voltage' ? 'power-voltage' : 'power-current');
+    if (!target) {
+        return;
+    }
+
+    if (!appState.powerConnected) {
+        return;
+    }
+
+    const rawValue = target.value.trim();
+    if (rawValue === '') {
+        return;
+    }
+
+    const parsedValue = Number.parseFloat(rawValue);
+    if (Number.isNaN(parsedValue)) {
+        return;
+    }
+
+    const normalizedValue = String(parsedValue);
+    if (
+        target.dataset.lastAppliedValue === normalizedValue ||
+        target.dataset.pendingAppliedValue === normalizedValue
+    ) {
+        return;
+    }
+
+    const payload = {[field]: parsedValue};
+    target.dataset.pendingAppliedValue = normalizedValue;
+
+    try {
+        await apiJson('/api/power/set', jsonOptions('POST', payload));
+        target.dataset.lastAppliedValue = normalizedValue;
+    } catch (error) {
+        console.error(`设置电源${field}失败`, error);
+        showToast(`设置电源参数失败: ${error.message || '未知错误'}`, 'error', 3600);
+    } finally {
+        if (target.dataset.pendingAppliedValue === normalizedValue) {
+            target.dataset.pendingAppliedValue = '';
+        }
+    }
+}
+
 async function powerToggleConnect() {
     if (appState.powerConnected) {
         await powerDisconnect();
@@ -1473,23 +1570,8 @@ async function powerSetParams() {
         return;
     }
 
-    const voltageValue = $id('power-voltage') ? $id('power-voltage').value : '';
-    const currentValue = $id('power-current') ? $id('power-current').value : '';
-    const payload = {};
-
-    if (voltageValue !== '') {
-        payload.voltage = Number.parseFloat(voltageValue);
-    }
-    if (currentValue !== '') {
-        payload.current = Number.parseFloat(currentValue);
-    }
-
-    try {
-        await apiJson('/api/power/set', jsonOptions('POST', payload));
-    } catch (error) {
-        console.error('设置电源参数失败', error);
-        showToast(`设置电源参数失败: ${error.message || '未知错误'}`, 'error', 3600);
-    }
+    await powerApplySingleParam('voltage');
+    await powerApplySingleParam('current');
 }
 
 async function powerSetOutput(on) {

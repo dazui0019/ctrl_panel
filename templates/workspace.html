@@ -103,16 +103,27 @@
                 <p class="meta-line">资源: <strong id="power-resource-label">--</strong></p>
                 <p class="panel-note" id="power-work-hint">请先到设备管理页连接电源，连接后这里可直接设置参数和查看测量值。</p>
 
-                <div class="field-row">
-                    <div class="field">
+                <div class="field-row field-row-dual">
+                    <div class="field field-compact">
                         <label for="power-voltage">电压 (V)</label>
-                        <input class="power-work-control" type="number" id="power-voltage" step="0.1" value="13.5">
+                        <div class="power-param-control">
+                            <input class="power-work-control power-param-input" type="number" id="power-voltage" step="0.1" value="13.5">
+                            <div class="power-stepper">
+                                <button type="button" class="power-work-control power-step-btn power-step-up" onclick="powerStepParam('power-voltage', 'voltage', 1)" aria-label="增加电压"></button>
+                                <button type="button" class="power-work-control power-step-btn power-step-down" onclick="powerStepParam('power-voltage', 'voltage', -1)" aria-label="减小电压"></button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="field">
+                    <div class="field field-compact">
                         <label for="power-current">电流 (A)</label>
-                        <input class="power-work-control" type="number" id="power-current" step="0.1" value="20">
+                        <div class="power-param-control">
+                            <input class="power-work-control power-param-input" type="number" id="power-current" step="0.1" value="20">
+                            <div class="power-stepper">
+                                <button type="button" class="power-work-control power-step-btn power-step-up" onclick="powerStepParam('power-current', 'current', 1)" aria-label="增加电流"></button>
+                                <button type="button" class="power-work-control power-step-btn power-step-down" onclick="powerStepParam('power-current', 'current', -1)" aria-label="减小电流"></button>
+                            </div>
+                        </div>
                     </div>
-                    <button class="btn btn-primary power-work-control btn-inline" onclick="powerSetParams()">设置</button>
                 </div>
 
                 <div class="toolbar">

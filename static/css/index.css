@@ -399,8 +399,16 @@ input::placeholder {
     grid-template-columns: minmax(0, 1fr);
 }
 
+.field-row-dual {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .field-grow {
     min-width: 0;
+}
+
+.field-compact {
+    align-items: flex-start;
 }
 
 .input-action {
@@ -408,6 +416,86 @@ input::placeholder {
     grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 10px;
     align-items: center;
+}
+
+.power-param-control {
+    display: inline-grid;
+    grid-template-columns: minmax(136px, 168px) 42px;
+    align-items: stretch;
+    width: auto;
+}
+
+.power-param-input {
+    width: 100%;
+    min-width: 0;
+    padding: 12px 14px;
+    border-radius: 16px 0 0 16px;
+    border-right: none;
+    font-size: 1.05rem;
+    font-weight: 700;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.power-param-input::-webkit-outer-spin-button,
+.power-param-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.power-stepper {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    width: 42px;
+    border: 1px solid var(--line);
+    border-radius: 0 16px 16px 0;
+    overflow: hidden;
+    background: linear-gradient(180deg, rgba(239, 246, 244, 0.96), rgba(227, 237, 234, 0.96));
+}
+
+.power-step-btn {
+    position: relative;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    min-height: 24px;
+    transition: background 0.14s ease, transform 0.14s ease;
+}
+
+.power-step-btn + .power-step-btn {
+    border-top: 1px solid rgba(118, 134, 129, 0.2);
+}
+
+.power-step-btn::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+}
+
+.power-step-up::before {
+    border-bottom: 8px solid var(--accent-dark);
+}
+
+.power-step-down::before {
+    border-top: 8px solid var(--accent-dark);
+}
+
+.power-step-btn:hover {
+    background: rgba(15, 118, 110, 0.12);
+}
+
+.power-step-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    background: transparent;
+}
+
+.power-step-btn:active {
+    transform: translateY(1px);
 }
 
 .btn {
