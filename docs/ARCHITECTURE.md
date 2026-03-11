@@ -12,12 +12,16 @@
   - 全局状态 `DeviceState`
   - 三类控制器：`ResistanceController` / `PowerController` / `ScopeController`
   - NTC 计算与显示格式化
-- `templates/index.html`
-  - 页面结构（DOM）
+- `templates/base.html`
+  - 共享页面骨架与顶部导航
+- `templates/workspace.html`
+  - 工作页面 DOM，集中展示操作区和数据区
+- `templates/device_management.html`
+  - 设备管理页面 DOM，集中处理连接和设备清单维护
 - `static/css/index.css`
-  - 页面样式
+  - 两个页面共享的样式系统与响应式布局
 - `static/js/index.js`
-  - 前端交互逻辑、Toast、设备卡片渲染
+  - 前端交互逻辑、Toast、按页面初始化的设备卡片渲染
 
 ## 2. 关键状态与持久化
 
@@ -57,7 +61,14 @@
 
 `ScopeController` 内部使用 `io_lock`，保证同一时刻仅有一个示波器 I/O 操作。
 
-### 4.2 截图复制流程
+### 4.2 本地/远程控制语义
+
+- 连接成功后，后端会立即调用 `unlock_local()`。
+- `unlock_local()` 会发送 `:COMMunicate:REMote OFF`，让前面板按键恢复可用。
+- 前端仍然保留远程读取、通道切换、截图与刷新周期设置，不会因为“本地已解锁”而暂停。
+- 用户主动点击“锁定”时，后端改发 `:COMMunicate:REMote ON`，切回远程独占模式。
+
+### 4.3 截图复制流程
 
 接口：`POST /api/scope/copy_screenshot`
 

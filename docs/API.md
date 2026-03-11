@@ -146,6 +146,24 @@ POST /api/res/devices/order
 | POST | `/api/scope/config` | 更新前端配置状态（刷新间隔等） |
 | GET | `/api/scope/state` | 获取示波器状态 |
 
+`/api/scope/connect` 当前行为：
+
+- 连接成功后，服务端会立即尝试执行本地解锁。
+- 成功时返回 `locked: false`，表示前面板已可操作。
+- 若解锁失败，会返回 `locked: true`，同时 `message` 中附带失败原因。
+
+返回示例：
+
+```json
+{
+  "success": true,
+  "message": "连接成功",
+  "locked": false
+}
+```
+
+`/api/scope/unlock` / `/api/scope/lock` 仅切换仪器本地/远程模式，不会中断当前连接。
+
 `/api/scope/copy_screenshot` 关键行为：
 
 1. 从示波器拉取 PNG 二进制数据。
@@ -170,6 +188,11 @@ POST /api/res/devices/order
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/state` | 一次返回电阻/电源/示波器连接状态 |
+
+`/api/state` 中 `scope.locked` 含义：
+
+- `true`：当前处于远程锁定模式，示波器前面板按键受限
+- `false`：当前已解锁本地控制，前面板和网页都可继续使用
 
 ## 前端相关约定
 

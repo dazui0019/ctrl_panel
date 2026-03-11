@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <section class="page-hero">
+        <div>
+            <p class="page-kicker">Workspace</p>
+            <h2>工作页面</h2>
+        </div>
+    </section>
+
+    <section class="layout-grid workspace-grid">
+        <div class="panel panel-main">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-kicker">Resistance Workbench</p>
+                    <h3>电阻工作台</h3>
+                </div>
+                <span id="res-title-status" class="status-badge">未连接</span>
+            </div>
+
+            <div class="toolbar toolbar-wrap">
+                <button class="btn btn-secondary" onclick="resRefreshDeviceValuesOnce()">刷新当前值</button>
+                <button class="btn btn-secondary" onclick="resToggleSelectAll()" id="btn-res-select-toggle">全选</button>
+                <span class="toolbar-divider"></span>
+                <span class="mini-label">常用温度</span>
+                <button class="btn btn-secondary" id="btn-res-quick-temp-0" onclick="resBatchSetTemperatureByIndex(0)">-40℃</button>
+                <button class="btn btn-secondary" id="btn-res-quick-temp-1" onclick="resBatchSetTemperatureByIndex(1)">25℃</button>
+                <button class="btn btn-secondary" id="btn-res-quick-temp-2" onclick="resBatchSetTemperatureByIndex(2)">85℃</button>
+                <button class="btn btn-secondary" onclick="resConfigQuickTemps()">配置</button>
+            </div>
+
+            <p class="panel-note" id="res-work-hint">先在设备管理页连接电阻串口，并维护好设备列表。</p>
+
+            <div class="device-grid workspace-device-grid" id="device-grid">
+                <div class="loading">暂无设备</div>
+            </div>
+
+            <div class="subsection-header">
+                <h4>设置日志</h4>
+                <button class="btn btn-secondary btn-small" onclick="clearResLog()">清除</button>
+            </div>
+
+            <div id="res-log" class="log-box">
+                <div class="placeholder">日志记录...</div>
+            </div>
+        </div>
+
+        <div class="side-stack">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Oscilloscope</p>
+                        <h3>示波器数据</h3>
+                    </div>
+                    <span id="scope-title-status" class="status-badge">未连接</span>
+                </div>
+
+                <div class="toolbar toolbar-compact">
+                    <span class="meta-line">序列号: <strong id="scope-serial-display">--</strong></span>
+                    <label class="interval-control">
+                        刷新周期
+                        <input type="number" id="scope-interval" value="1000" min="500" max="10000" step="100" onchange="scopeUpdateInterval()">
+                        <span>ms</span>
+                    </label>
+                </div>
+
+                <div class="toolbar">
+                    <button class="btn btn-secondary" onclick="scopeToggleLock()" id="btn-scope-lock">解锁</button>
+                    <button class="btn btn-secondary" onclick="scopeCopyScreenshot()" id="btn-scope-copy">截图</button>
+                </div>
+
+                <p class="panel-note" id="scope-work-hint">请先到设备管理页连接示波器，然后这里会自动显示通道数据。</p>
+
+                <div class="scope-channels">
+                    <div class="scope-channel disconnected" id="scope-ch1" onclick="scopeToggleChannel(1)">
+                        <span class="ch-label">CH1</span>
+                        <span class="ch-value">--</span>
+                    </div>
+                    <div class="scope-channel disconnected" id="scope-ch2" onclick="scopeToggleChannel(2)">
+                        <span class="ch-label">CH2</span>
+                        <span class="ch-value">--</span>
+                    </div>
+                    <div class="scope-channel disconnected" id="scope-ch3" onclick="scopeToggleChannel(3)">
+                        <span class="ch-label">CH3</span>
+                        <span class="ch-value">--</span>
+                    </div>
+                    <div class="scope-channel disconnected" id="scope-ch4" onclick="scopeToggleChannel(4)">
+                        <span class="ch-label">CH4</span>
+                        <span class="ch-value">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Power Supply</p>
+                        <h3>电源工作区</h3>
+                    </div>
+                    <span id="power-title-status" class="status-badge">未连接</span>
+                </div>
+
+                <p class="meta-line">资源: <strong id="power-resource-label">--</strong></p>
+                <p class="panel-note" id="power-work-hint">请先到设备管理页连接电源，连接后这里可直接设置参数和查看测量值。</p>
+
+                <div class="field-row">
+                    <div class="field">
+                        <label for="power-voltage">电压 (V)</label>
+                        <input class="power-work-control" type="number" id="power-voltage" step="0.1" value="13.5">
+                    </div>
+                    <div class="field">
+                        <label for="power-current">电流 (A)</label>
+                        <input class="power-work-control" type="number" id="power-current" step="0.1" value="20">
+                    </div>
+                    <button class="btn btn-primary power-work-control btn-inline" onclick="powerSetParams()">设置</button>
+                </div>
+
+                <div class="toolbar">
+                    <button class="btn btn-success power-work-control" onclick="powerSetOutput(true)">开启输出</button>
+                    <button class="btn btn-danger power-work-control" onclick="powerSetOutput(false)">关闭输出</button>
+                </div>
+
+                <div id="power-measure" class="value-display">-- V, -- A</div>
+            </div>
+        </div>
+    </section>
+{% endblock %}

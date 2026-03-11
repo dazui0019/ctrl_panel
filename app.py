@@ -6,7 +6,7 @@
 """
 
 import os
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for
 
 from device_runtime import (
     state,
@@ -16,7 +16,6 @@ from device_runtime import (
     scope_controller,
     ResistanceDevice,
     build_res_device_status,
-    format_resistance_display,
 )
 
 app = Flask(__name__)
@@ -25,12 +24,26 @@ app = Flask(__name__)
 def get_request_data():
     """安全读取 JSON 请求体，避免空 body 导致异常"""
     return request.get_json(silent=True) or {}
+
+
 # ========== Flask 路由 ==========
 
 @app.route('/')
 def index():
-    """主页"""
-    return render_template('index.html')
+    """默认进入工作页面"""
+    return redirect(url_for('workspace'))
+
+
+@app.route('/workspace')
+def workspace():
+    """工作页面"""
+    return render_template('workspace.html', page='workspace', page_title='工作页面')
+
+
+@app.route('/devices')
+def device_management():
+    """设备管理页面"""
+    return render_template('device_management.html', page='device-management', page_title='设备管理')
 
 
 # ----- 电阻 API -----
@@ -162,8 +175,6 @@ def res_get_device_values():
     result_devices = []
     for device in res_controller.devices_list:
         success, msg, value = res_controller.get_value(device.sn)
-        if success:
-            device.current_resistance = format_resistance_display(value)
 
         status = build_res_device_status(device)
         status["read_success"] = success
@@ -388,13 +399,23 @@ def scope_connect():
     success, msg = scope_controller.connect(serial)
     if success:
         state.scope_serial = serial
-    return jsonify({"success": success, "message": msg})
+        locked = False
+        try:
+            scope_controller.unlock_local()
+        except Exception as e:
+            locked = True
+            msg = f"{msg}; 本地控制解锁失败: {e}"
+        state.scope_remote_locked = locked
+        return jsonify({"success": True, "message": msg, "locked": locked})
+    state.scope_remote_locked = False
+    return jsonify({"success": success, "message": msg, "locked": False})
 
 
 @app.route('/api/scope/disconnect', methods=['POST'])
 def scope_disconnect():
     """断开示波器"""
     scope_controller.disconnect()
+    state.scope_remote_locked = False
     return jsonify({"success": True})
 
 
@@ -403,6 +424,7 @@ def scope_unlock():
     """解锁示波器本地控制（保持连接）"""
     try:
         scope_controller.unlock_local()
+        state.scope_remote_locked = False
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -413,6 +435,7 @@ def scope_lock():
     """锁定示波器为远程控制（保持连接）"""
     try:
         scope_controller.lock_remote()
+        state.scope_remote_locked = True
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -541,6 +564,7 @@ def get_state():
         "scope": {
             "connected": scope_controller.device_id is not None,
             "serial": state.scope_serial,
+            "locked": state.scope_remote_locked,
             "channels": state.scope_channels,
             "refresh_interval": state.scope_refresh_interval,
             "auto_refresh": state.scope_auto_refresh

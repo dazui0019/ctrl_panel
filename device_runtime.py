@@ -33,6 +33,7 @@ class DeviceState:
         self.power_output = False
 
         self.scope_serial = "90Y701585"
+        self.scope_remote_locked = False
         self.scope_channels = []  # 用户选择的通道列表
         self.scope_refresh_interval = 1000  # ms
         self.scope_auto_refresh = False  # 自动刷新开关
@@ -47,7 +48,7 @@ class ResistanceDevice:
         self.sn = sn
         self.name = name
         self.current_resistance = None
-        self.connected = False
+        self.connected = False  # 最近一次读取电阻值是否成功
 
 
 class ResistanceController:
@@ -143,6 +144,7 @@ class ResistanceController:
             # 重置所有设备状态
             for device in self.devices.values():
                 device.connected = False
+                device.current_resistance = None
             return True
 
         try:
@@ -257,16 +259,7 @@ class ResistanceController:
                     actual_value = value
 
                 state.resistance_value = actual_value
-                # 更新设备状态
-                if sn and sn in self.devices:
-                    self.devices[sn].current_resistance = format_resistance_display(actual_value)
-                    self.devices[sn].connected = True
-                    # 更新列表中的设备
-                    for d in self.devices_list:
-                        if d.sn == sn:
-                            d.current_resistance = format_resistance_display(actual_value)
-                            d.connected = True
-                            break
+                self._mark_device_read_success(sn, actual_value)
             return result, msg
         except TimeoutError:
             return False, "设置电阻超时"
@@ -325,13 +318,40 @@ class ResistanceController:
         """查询电阻当前设定值（AT+RES.SP?）"""
         success, response = self.send_command("AT+RES.SP?", sn, wait_secs=0.3)
         if not success:
+            self._mark_device_read_failure(sn)
             return False, response, None
 
         value = self._parse_resistance_from_response(response)
         if value is None:
+            self._mark_device_read_failure(sn)
             return False, f"无法解析返回值: {response}", None
 
+        self._mark_device_read_success(sn, value)
         return True, "查询成功", value
+
+    def _mark_device_read_success(self, sn, value):
+        """记录最近一次读值成功，并更新缓存值"""
+        if not sn:
+            return
+
+        device = self.devices.get(sn)
+        if device is None:
+            return
+
+        device.current_resistance = format_resistance_display(value)
+        device.connected = True
+
+    def _mark_device_read_failure(self, sn):
+        """记录最近一次读值失败，并清空缓存值避免显示旧数据"""
+        if not sn:
+            return
+
+        device = self.devices.get(sn)
+        if device is None:
+            return
+
+        device.connected = False
+        device.current_resistance = None
 
 
 res_controller = ResistanceController()
@@ -885,30 +905,42 @@ class ScopeController:
         """解锁示波器本地控制（保持连接）"""
         if self.device_id is None:
             return
-        if self.backend == "tmctl":
-            self.tmctl.SetRen(self.device_id, 0)
-        elif self.backend == "pyvisa":
-            # 对 pyvisa 后端优先使用 VISA REN 控制；部分 USBTMC 设备不支持时降级为 no-op
-            try:
-                import pyvisa
-                if hasattr(self.inst, "control_ren"):
-                    self.inst.control_ren(pyvisa.constants.RENLineOperation.deassert)
-            except Exception:
-                pass
+        with self.io_lock:
+            # Yokogawa 通讯手册中远程/本地切换使用 :COMMunicate:REMote ON/OFF。
+            self._send_scpi(":COMMunicate:REMote OFF")
+
+            if self.backend == "tmctl":
+                try:
+                    self.tmctl.SetRen(self.device_id, 0)
+                except Exception:
+                    pass
+            elif self.backend == "pyvisa":
+                try:
+                    import pyvisa
+                    if hasattr(self.inst, "control_ren"):
+                        self.inst.control_ren(pyvisa.constants.RENLineOperation.deassert_gtl)
+                except Exception:
+                    pass
 
     def lock_remote(self):
         """锁定示波器为远程控制（保持连接）"""
         if self.device_id is None:
             return
-        if self.backend == "tmctl":
-            self.tmctl.SetRen(self.device_id, 1)
-        elif self.backend == "pyvisa":
-            try:
-                import pyvisa
-                if hasattr(self.inst, "control_ren"):
-                    self.inst.control_ren(pyvisa.constants.RENLineOperation.asrt)
-            except Exception:
-                pass
+        with self.io_lock:
+            self._send_scpi(":COMMunicate:REMote ON")
+
+            if self.backend == "tmctl":
+                try:
+                    self.tmctl.SetRen(self.device_id, 1)
+                except Exception:
+                    pass
+            elif self.backend == "pyvisa":
+                try:
+                    import pyvisa
+                    if hasattr(self.inst, "control_ren"):
+                        self.inst.control_ren(pyvisa.constants.RENLineOperation.asrt_address)
+                except Exception:
+                    pass
 
     def set_channel(self, channel, enable):
         """设置通道开关"""

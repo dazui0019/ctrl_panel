@@ -36,6 +36,7 @@ Thumbs.db
 .env
 .env.local
 *.log
+.ctrl_panel.pid
 
 # Runtime screenshots
 screenshots/

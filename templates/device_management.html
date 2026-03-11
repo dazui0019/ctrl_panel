@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <section class="page-hero">
+        <div>
+            <p class="page-kicker">Device Management</p>
+            <h2>设备管理页面</h2>
+        </div>
+    </section>
+
+    <section class="layout-grid management-grid">
+        <div class="panel panel-main">
+            <div class="panel-header">
+                <div>
+                    <p class="panel-kicker">Resistance Devices</p>
+                    <h3>电阻设备管理</h3>
+                </div>
+                <span id="res-title-status" class="status-badge">未连接</span>
+            </div>
+
+            <div class="field-row field-row-wide">
+                <div class="field field-grow">
+                    <label for="res-port">串口</label>
+                    <div class="input-action">
+                        <select id="res-port" onchange="resPortChanged()">
+                            <option value="">请选择串口...</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="resToggleSerial()" id="btn-res-serial-connect">连接</button>
+                        <button class="btn btn-secondary" onclick="resRefreshPorts()">刷新串口</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="field-row">
+                <div class="field">
+                    <label for="res-device-name">设备名称</label>
+                    <input type="text" id="res-device-name" placeholder="例如 NTC-A">
+                </div>
+                <div class="field">
+                    <label for="res-device-sn">SN</label>
+                    <input type="text" id="res-device-sn" placeholder="例如 01">
+                </div>
+                <button class="btn btn-primary btn-inline" onclick="resAddDevice()">添加设备</button>
+            </div>
+
+            <div class="toolbar toolbar-wrap">
+                <button class="btn btn-success" onclick="resDeviceAction('connect')">挂接</button>
+                <button class="btn btn-danger" onclick="resDeviceAction('disconnect')">开路</button>
+                <button class="btn btn-warning" onclick="resDeviceAction('short')">短路</button>
+                <button class="btn btn-secondary" onclick="resDeviceAction('unshort')">取消短路</button>
+                <button class="btn btn-secondary" onclick="resToggleSelectAll()" id="btn-res-select-toggle">全选</button>
+                <button class="btn btn-secondary" onclick="resDeleteSelected()">删除选中</button>
+            </div>
+
+            <p class="panel-note">勾选复选框后再批量操作，拖拽可排序，右键可重命名或删除设备。</p>
+
+            <div class="device-grid management-device-grid" id="device-grid">
+                <div class="loading">请先连接串口，然后添加或管理设备。</div>
+            </div>
+        </div>
+
+        <div class="side-stack">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Oscilloscope Link</p>
+                        <h3>示波器连接</h3>
+                    </div>
+                    <span id="scope-title-status" class="status-badge">未连接</span>
+                </div>
+
+                <div class="field">
+                    <label for="scope-serial">USB 序列号</label>
+                    <input type="text" id="scope-serial" value="90Y701585" placeholder="USB 序列号" oninput="scopeSerialChanged()">
+                </div>
+
+                <div class="toolbar">
+                    <button class="btn btn-primary" onclick="scopeToggleConnect()" id="btn-scope-connect">连接</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Power Link</p>
+                        <h3>电源连接</h3>
+                    </div>
+                    <span id="power-title-status" class="status-badge">未连接</span>
+                </div>
+
+                <div class="field">
+                    <label for="power-address">VISA 资源</label>
+                    <div class="input-action">
+                        <select id="power-address" onchange="powerAddressChanged()">
+                            <option value="">请选择电源...</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="powerToggleConnect()" id="btn-power-connect">连接</button>
+                    </div>
+                </div>
+
+                <div class="toolbar">
+                    <button class="btn btn-secondary" onclick="powerRefreshResources()">刷新资源</button>
+                </div>
+            </div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block overlays %}
+    <div class="context-menu" id="context-menu">
+        <div class="context-menu-item" onclick="resRenameDeviceFromMenu()">重命名</div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="resDeleteDeviceFromMenu()">删除</div>
+    </div>
+
+    <div class="modal-overlay" id="rename-modal">
+        <div class="modal">
+            <h3>重命名设备</h3>
+            <div class="field">
+                <label for="rename-input">新名称</label>
+                <input type="text" id="rename-input" placeholder="输入新名称">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeRenameModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveRename()">确定</button>
+            </div>
+        </div>
+    </div>
+{% endblock %}

@@ -1,18 +1,130 @@
 let scopeRefreshTimer = null;
 let powerRefreshTimer = null;
-let scopeConnected = false;
-let scopeChannelStates = {1: false, 2: false, 3: false, 4: false};  // 通道开关状态
-let powerConnected = false;
-let resSerialConnected = false;
-let devices = [];  // 设备列表
-let selectedDevices = new Set();  // 选中的设备
-let contextMenuSN = null;  // 右键点击的设备SN
+
 const RES_QUICK_TEMP_STORAGE_KEY = 'res_quick_temps_v1';
 const RES_QUICK_TEMP_DEFAULTS = [-40, 25, 85];
-let resQuickTemps = [...RES_QUICK_TEMP_DEFAULTS];
+
+const appState = {
+    page: 'workspace',
+    resSerialConnected: false,
+    powerConnected: false,
+    scopeConnected: false,
+    scopeLocked: false,
+    scopeChannelStates: {1: false, 2: false, 3: false, 4: false},
+    devices: [],
+    selectedDevices: new Set(),
+    contextMenuSN: null,
+    resQuickTemps: [...RES_QUICK_TEMP_DEFAULTS],
+    connection: {
+        resistancePort: null,
+        powerAddress: null,
+        scopeSerial: null,
+    },
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    initApp().catch((error) => {
+        console.error('页面初始化失败', error);
+        showToast('页面初始化失败，请刷新后重试。', 'error', 4200);
+    });
+});
+
+window.addEventListener('beforeunload', () => {
+    stopAutoRefresh();
+    stopPowerAutoRefresh();
+});
+
+function $id(id) {
+    return document.getElementById(id);
+}
+
+function setText(id, text) {
+    const el = $id(id);
+    if (el) {
+        el.textContent = text;
+    }
+}
+
+function setValue(id, value) {
+    const el = $id(id);
+    if (el) {
+        el.value = value ?? '';
+    }
+}
+
+function setDisabled(id, disabled) {
+    const el = $id(id);
+    if (el) {
+        el.disabled = disabled;
+    }
+}
+
+function toggleHidden(id, hidden) {
+    const el = $id(id);
+    if (el) {
+        el.classList.toggle('is-hidden', hidden);
+    }
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
+}
+
+function deviceDomId(sn) {
+    return String(sn ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function ensureOption(select, value, label = value) {
+    if (!select || !value) {
+        return;
+    }
+
+    const exists = Array.from(select.options).some((option) => option.value === value);
+    if (!exists) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+    }
+}
+
+function jsonOptions(method, payload) {
+    return {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    };
+}
+
+async function apiJson(url, options = {}) {
+    const response = await fetch(url, options);
+    let data = {};
+
+    try {
+        data = await response.json();
+    } catch (error) {
+        data = {};
+    }
+
+    if (!response.ok) {
+        const message = data.message || data.error || `请求失败 (${response.status})`;
+        const err = new Error(message);
+        err.status = response.status;
+        err.data = data;
+        throw err;
+    }
+
+    return data;
+}
 
 function showToast(message, type = 'info', duration = 2600) {
-    let container = document.getElementById('toast-container');
+    let container = $id('toast-container');
     if (!container) {
         container = document.createElement('div');
         container.id = 'toast-container';
@@ -35,126 +147,364 @@ function showToast(message, type = 'info', duration = 2600) {
     }, duration);
 }
 
-// 初始化
-window.onload = async function() {
+async function initApp() {
+    appState.page = document.body.dataset.page || 'workspace';
+
+    initGlobalListeners();
+    prepareStaticUi();
     initResQuickTemps();
 
-    // 先获取设备状态，再加载设备列表
-    await updateDeviceStates();
-
-    await Promise.all([
-        resRefreshPorts(),
-        powerRefreshResources()
-    ]);
-
-    // 如果串口已连接，确保下拉框显示正确的值
-    if (resSerialConnected && state.resistance_port) {
-        document.getElementById('res-port').value = state.resistance_port;
+    if (appState.page === 'device-management') {
+        await Promise.all([resRefreshPorts(), powerRefreshResources()]);
     }
 
-    // 如果电源已连接，确保下拉框显示正确的值
-    if (powerConnected && state.power_address) {
-        document.getElementById('power-address').value = state.power_address;
-    }
+    await syncDeviceStates();
+}
 
-    // 如果示波器已连接，确保输入框显示正确的值
-    if (scopeConnected && state.scope_serial) {
-        document.getElementById('scope-serial').value = state.scope_serial;
-    }
-
-    // 点击其他地方关闭右键菜单
-    document.addEventListener('click', function(e) {
-        const contextMenu = document.getElementById('context-menu');
-        if (!contextMenu.contains(e.target)) {
-            contextMenu.style.display = 'none';
+function initGlobalListeners() {
+    document.addEventListener('click', (event) => {
+        const menu = $id('context-menu');
+        if (menu && menu.style.display === 'block' && !menu.contains(event.target)) {
+            closeContextMenu();
         }
     });
-};
 
-// 保存当前连接的设备信息
-let state = {
-    resistance_port: null,
-    power_address: null,
-    scope_serial: null
-};
-
-// 更新设备连接状态
-async function updateDeviceStates() {
-    try {
-        const res = await fetch('/api/state');
-        const data = await res.json();
-
-        // 保存端口号到全局状态
-        state.resistance_port = data.resistance.port;
-
-        // 电阻（串口连接）
-        if (data.resistance.connected) {
-            resSerialConnected = true;
-            document.getElementById('res-port').value = data.resistance.port || '';
-            document.getElementById('res-port').disabled = true;
-            document.getElementById('btn-res-serial-connect').textContent = '断开';
-            document.getElementById('res-title-status').textContent = '串口已连接';
-            // 加载设备列表
-            await resLoadDevices();
-            await resRefreshDeviceValuesOnce();
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeContextMenu();
+            closeRenameModal();
         }
 
-        // 电源
-        if (data.power.connected) {
-            powerConnected = true;
-            state.power_address = data.power.address;
-            document.getElementById('power-address').value = data.power.address || '';
-            document.getElementById('power-address').disabled = true;
-            document.getElementById('btn-power-connect').textContent = '断开';
-            document.getElementById('power-title-status').textContent = '已连接';
-            startPowerAutoRefresh();
+        if (event.key === 'Enter') {
+            const overlay = $id('rename-modal');
+            const renameInput = $id('rename-input');
+            if (
+                overlay &&
+                renameInput &&
+                overlay.style.display === 'flex' &&
+                document.activeElement === renameInput
+            ) {
+                saveRename();
+            }
         }
+    });
 
-        // 示波器
-        if (data.scope.connected) {
-            scopeConnected = true;
-            state.scope_serial = data.scope.serial;
-            document.getElementById('scope-serial').value = data.scope.serial || '';
-            document.getElementById('scope-serial').disabled = true;
-            document.getElementById('btn-scope-connect').textContent = '断开';
-            document.getElementById('scope-title-status').textContent = '已连接';
-            // 显示锁定按钮
-            document.getElementById('btn-scope-lock').style.display = 'inline-block';
-            document.getElementById('btn-scope-copy').style.display = 'inline-block';
-            document.getElementById('btn-scope-copy').disabled = false;
-            // 同步通道状态
-            scopeSyncChannelState();
-        }
-
-        if (data.scope.refresh_interval) {
-            document.getElementById('scope-interval').value = data.scope.refresh_interval;
-        }
-        // 默认开启自动刷新（如果示波器已连接）
-        if (scopeConnected) {
-            startAutoRefresh();
-        }
-    } catch (e) {
-        console.error('获取设备状态失败', e);
+    const renameOverlay = $id('rename-modal');
+    if (renameOverlay) {
+        renameOverlay.addEventListener('click', (event) => {
+            if (event.target === renameOverlay) {
+                closeRenameModal();
+            }
+        });
     }
 }
 
-// ===== 电阻控制 (多设备RS485) =====
-async function resRefreshPorts() {
+function prepareStaticUi() {
+    updateStatusBadge('res-title-status', false, '串口已连接', '未连接');
+    updateStatusBadge('power-title-status', false);
+    updateStatusBadge('scope-title-status', false);
+    updateSelectToggleButton();
+    renderQuickTempButtons();
+    togglePowerWorkspaceControls(false);
+    toggleScopeWorkspaceControls(false);
+    resetScopeChannelDisplays();
+    clearResLog();
+    resPortChanged();
+    powerAddressChanged();
+    scopeSerialChanged();
+}
+
+async function syncDeviceStates() {
     try {
-        const res = await fetch('/api/res/list_ports');
-        const data = await res.json();
-        const select = document.getElementById('res-port');
-        select.innerHTML = '<option value="">请选择串口...</option>';
-        data.ports.forEach(port => {
-            select.innerHTML += `<option value="${port}">${port}</option>`;
-        });
-    } catch (e) {
-        console.error('获取串口列表失败', e);
+        const data = await apiJson('/api/state');
+
+        applyResistanceState(data.resistance || {});
+        applyPowerState(data.power || {});
+        applyScopeState(data.scope || {});
+
+        if ($id('device-grid')) {
+            if (appState.resSerialConnected) {
+                await resLoadDevices();
+                await resRefreshDeviceValuesOnce(true);
+            } else {
+                appState.devices = [];
+                appState.selectedDevices.clear();
+                renderDevices();
+            }
+        }
+
+        if (appState.scopeConnected && appState.page === 'workspace') {
+            await scopeSyncChannelState(true);
+        }
+    } catch (error) {
+        console.error('获取设备状态失败', error);
+        showToast(`获取设备状态失败: ${error.message || '未知错误'}`, 'error', 3800);
     }
+}
+
+function updateStatusBadge(id, connected, connectedText = '已连接', disconnectedText = '未连接') {
+    const badge = $id(id);
+    if (!badge) {
+        return;
+    }
+
+    badge.textContent = connected ? connectedText : disconnectedText;
+    badge.classList.toggle('is-active', connected);
+    badge.classList.toggle('is-inactive', !connected);
+}
+
+function applyResistanceState(data) {
+    appState.resSerialConnected = Boolean(data.connected);
+    appState.connection.resistancePort = data.port || null;
+
+    updateStatusBadge('res-title-status', appState.resSerialConnected, '串口已连接', '未连接');
+
+    const portSelect = $id('res-port');
+    if (portSelect) {
+        ensureOption(portSelect, data.port);
+        if (data.port) {
+            portSelect.value = data.port;
+        }
+        portSelect.disabled = appState.resSerialConnected;
+    }
+
+    const connectButton = $id('btn-res-serial-connect');
+    if (connectButton) {
+        connectButton.textContent = appState.resSerialConnected ? '断开' : '连接';
+    }
+
+    if (!appState.resSerialConnected) {
+        appState.selectedDevices.clear();
+    }
+
+    resPortChanged();
+    updateResistanceHint();
+}
+
+function applyPowerState(data) {
+    appState.powerConnected = Boolean(data.connected);
+    appState.connection.powerAddress = data.address || null;
+
+    updateStatusBadge('power-title-status', appState.powerConnected);
+
+    const addressSelect = $id('power-address');
+    if (addressSelect) {
+        ensureOption(addressSelect, data.address);
+        if (data.address) {
+            addressSelect.value = data.address;
+        }
+        addressSelect.disabled = appState.powerConnected;
+    }
+
+    const connectButton = $id('btn-power-connect');
+    if (connectButton) {
+        connectButton.textContent = appState.powerConnected ? '断开' : '连接';
+    }
+
+    if (typeof data.voltage === 'number' && $id('power-voltage')) {
+        setValue('power-voltage', data.voltage);
+    }
+    if (typeof data.current === 'number' && $id('power-current')) {
+        setValue('power-current', data.current);
+    }
+
+    setText('power-resource-label', data.address || '--');
+    if (!appState.powerConnected) {
+        setText('power-measure', '-- V, -- A');
+    }
+
+    powerAddressChanged();
+    togglePowerWorkspaceControls(appState.powerConnected);
+    updatePowerHint();
+
+    if (appState.powerConnected && appState.page === 'workspace') {
+        startPowerAutoRefresh();
+    } else {
+        stopPowerAutoRefresh();
+    }
+}
+
+function applyScopeState(data) {
+    appState.scopeConnected = Boolean(data.connected);
+    appState.connection.scopeSerial = data.serial || null;
+    if (appState.scopeConnected) {
+        appState.scopeLocked = typeof data.locked === 'boolean' ? data.locked : false;
+    } else {
+        appState.scopeLocked = false;
+    }
+
+    updateStatusBadge('scope-title-status', appState.scopeConnected);
+
+    if (typeof data.refresh_interval === 'number') {
+        setValue('scope-interval', data.refresh_interval);
+    }
+
+    const serialInput = $id('scope-serial');
+    if (serialInput) {
+        if (data.serial) {
+            serialInput.value = data.serial;
+        }
+        serialInput.disabled = appState.scopeConnected;
+    }
+
+    setText('scope-serial-display', data.serial || '--');
+
+    const connectButton = $id('btn-scope-connect');
+    if (connectButton) {
+        connectButton.textContent = appState.scopeConnected ? '断开' : '连接';
+    }
+
+    scopeSerialChanged();
+    toggleScopeWorkspaceControls(appState.scopeConnected);
+    updateScopeHint();
+
+    if (!appState.scopeConnected) {
+        appState.scopeChannelStates = {1: false, 2: false, 3: false, 4: false};
+        stopAutoRefresh();
+        resetScopeChannelDisplays();
+    }
+}
+
+function updateResistanceHint() {
+    const hint = $id('res-work-hint');
+    if (!hint) {
+        return;
+    }
+
+    if (!appState.resSerialConnected) {
+        hint.textContent = '先在设备管理页连接电阻串口，并维护好设备列表。';
+        toggleHidden('res-work-hint', false);
+        return;
+    }
+
+    if (appState.devices.length === 0) {
+        hint.textContent = '串口已连接，但设备列表为空。请先到设备管理页添加设备。';
+        toggleHidden('res-work-hint', false);
+        return;
+    }
+
+    toggleHidden('res-work-hint', true);
+}
+
+function updatePowerHint() {
+    if (!$id('power-work-hint')) {
+        return;
+    }
+    toggleHidden('power-work-hint', appState.powerConnected);
+}
+
+function updateScopeHint() {
+    if (!$id('scope-work-hint')) {
+        return;
+    }
+
+    if (!appState.scopeConnected) {
+        setText('scope-work-hint', '请先到设备管理页连接示波器，然后这里会自动显示通道数据。');
+        toggleHidden('scope-work-hint', false);
+        return;
+    }
+
+    toggleHidden('scope-work-hint', true);
+}
+
+function togglePowerWorkspaceControls(connected) {
+    const controls = document.querySelectorAll('.power-work-control');
+    controls.forEach((control) => {
+        control.disabled = !connected;
+    });
+}
+
+function toggleScopeWorkspaceControls(connected) {
+    const intervalInput = $id('scope-interval');
+    if (intervalInput) {
+        intervalInput.disabled = !connected;
+    }
+
+    const lockButton = $id('btn-scope-lock');
+    if (lockButton) {
+        lockButton.style.display = connected ? 'inline-flex' : 'none';
+        lockButton.disabled = !connected;
+        lockButton.textContent = appState.scopeLocked ? '解锁' : '锁定';
+    }
+
+    const copyButton = $id('btn-scope-copy');
+    if (copyButton) {
+        copyButton.style.display = connected ? 'inline-flex' : 'none';
+        copyButton.disabled = !connected;
+    }
+
+    for (let channel = 1; channel <= 4; channel += 1) {
+        const card = $id(`scope-ch${channel}`);
+        if (card) {
+            card.classList.toggle('disconnected', !connected);
+        }
+    }
+}
+
+function resetScopeChannelDisplays() {
+    for (let channel = 1; channel <= 4; channel += 1) {
+        const card = $id(`scope-ch${channel}`);
+        if (!card) {
+            continue;
+        }
+
+        card.classList.add('disabled');
+        card.classList.add('disconnected');
+
+        const valueEl = card.querySelector('.ch-value');
+        if (valueEl) {
+            valueEl.textContent = '--';
+        }
+
+        const labelEl = card.querySelector('.ch-label');
+        if (labelEl) {
+            labelEl.style.color = '';
+        }
+    }
+}
+
+async function resRefreshPorts() {
+    const select = $id('res-port');
+    if (!select) {
+        return;
+    }
+
+    try {
+        const data = await apiJson('/api/res/list_ports');
+        const current = appState.connection.resistancePort || select.value;
+
+        select.innerHTML = '<option value="">请选择串口...</option>';
+        (data.ports || []).forEach((port) => {
+            const option = document.createElement('option');
+            option.value = port;
+            option.textContent = port;
+            select.appendChild(option);
+        });
+
+        ensureOption(select, current);
+        if (current) {
+            select.value = current;
+        }
+    } catch (error) {
+        console.error('获取串口列表失败', error);
+        showToast(`获取串口列表失败: ${error.message || '未知错误'}`, 'error', 3600);
+    } finally {
+        resPortChanged();
+    }
+}
+
+function resPortChanged() {
+    const select = $id('res-port');
+    const button = $id('btn-res-serial-connect');
+    if (!select || !button) {
+        return;
+    }
+
+    button.disabled = !appState.resSerialConnected && !select.value;
 }
 
 async function resToggleSerial() {
-    if (resSerialConnected) {
+    if (appState.resSerialConnected) {
         await resSerialDisconnect();
     } else {
         await resSerialConnect();
@@ -162,407 +512,585 @@ async function resToggleSerial() {
 }
 
 async function resSerialConnect() {
-    const port = document.getElementById('res-port').value;
-    if (!port) {
+    const select = $id('res-port');
+    if (!select || !select.value) {
         return;
     }
 
     try {
-        const res = await fetch('/api/res/connect', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({port: port})
-        });
-        const data = await res.json();
-        if (data.success) {
-            resSerialConnected = true;
-            state.resistance_port = port;
-            document.getElementById('res-title-status').textContent = '串口已连接';
-            document.getElementById('btn-res-serial-connect').textContent = '断开';
-            document.getElementById('res-port').disabled = true;
-            // 加载设备列表
-            await resLoadDevices();
-            await resRefreshDeviceValuesOnce();
-        } else {
-            alert('连接失败: ' + data.message);
+        const data = await apiJson('/api/res/connect', jsonOptions('POST', {port: select.value}));
+        if (!data.success) {
+            throw new Error(data.message || '连接失败');
         }
-    } catch (e) {
-        console.error('连接失败', e);
+
+        applyResistanceState({connected: true, port: select.value});
+        await resLoadDevices();
+        await resRefreshDeviceValuesOnce(true);
+        showToast(`电阻串口已连接: ${select.value}`, 'success', 2800);
+    } catch (error) {
+        console.error('连接电阻串口失败', error);
+        showToast(`连接电阻串口失败: ${error.message || '未知错误'}`, 'error', 3800);
     }
 }
 
 async function resSerialDisconnect() {
     try {
-        const res = await fetch('/api/res/disconnect', {
-            method: 'POST'
-        });
-        const data = await res.json();
-        if (data.success) {
-            resSerialConnected = false;
-            state.resistance_port = null;
-            document.getElementById('res-title-status').textContent = '';
-            document.getElementById('btn-res-serial-connect').textContent = '连接';
-            document.getElementById('res-port').disabled = false;
-            // 清空设备列表
-            devices = [];
-            renderDevices();
+        const data = await apiJson('/api/res/disconnect', {method: 'POST'});
+        if (!data.success) {
+            throw new Error(data.message || '断开失败');
         }
-    } catch (e) {
-        console.error('断开失败', e);
+
+        appState.devices = [];
+        appState.selectedDevices.clear();
+        applyResistanceState({connected: false, port: null});
+        renderDevices();
+        showToast('电阻串口已断开', 'info', 2400);
+    } catch (error) {
+        console.error('断开电阻串口失败', error);
+        showToast(`断开电阻串口失败: ${error.message || '未知错误'}`, 'error', 3800);
     }
 }
 
-function resPortChanged() {
-    const port = document.getElementById('res-port').value;
-    document.getElementById('btn-res-serial-connect').disabled = !port || resSerialConnected;
-}
-
-// 加载设备列表
 async function resLoadDevices() {
-    if (!resSerialConnected) {
-        document.getElementById('device-loading').textContent = '请先连接串口';
+    const grid = $id('device-grid');
+    if (!grid) {
+        return;
+    }
+
+    if (!appState.resSerialConnected) {
+        appState.devices = [];
+        renderDevices();
         return;
     }
 
     try {
-        const res = await fetch('/api/res/devices');
-        const data = await res.json();
-        const newDevices = data.devices || [];
+        const data = await apiJson('/api/res/devices');
+        const latestDevices = Array.isArray(data.devices) ? data.devices : [];
 
-        // 保持当前顺序，只更新数据
-        if (devices.length > 0 && newDevices.length > 0) {
-            // 按当前顺序重新排列新数据
+        if (appState.devices.length > 0 && latestDevices.length > 0) {
             const orderedDevices = [];
-            for (const sn of devices.map(d => d.sn)) {
-                const found = newDevices.find(d => d.sn === sn);
-                if (found) orderedDevices.push(found);
-            }
-            // 添加新设备（可能新增的）
-            for (const d of newDevices) {
-                if (!orderedDevices.find(x => x.sn === d.sn)) {
-                    orderedDevices.push(d);
+            for (const sn of appState.devices.map((device) => device.sn)) {
+                const match = latestDevices.find((device) => device.sn === sn);
+                if (match) {
+                    orderedDevices.push(match);
                 }
             }
-            devices = orderedDevices;
+            for (const device of latestDevices) {
+                if (!orderedDevices.find((item) => item.sn === device.sn)) {
+                    orderedDevices.push(device);
+                }
+            }
+            appState.devices = orderedDevices;
         } else {
-            devices = newDevices;
+            appState.devices = latestDevices;
         }
-        renderDevices();
-    } catch (e) {
-        console.error('加载设备列表失败', e);
+    } catch (error) {
+        console.error('加载设备列表失败', error);
+        showToast(`加载设备列表失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
+
+    renderDevices();
 }
 
-async function resRefreshDeviceValuesOnce() {
-    if (!resSerialConnected || devices.length === 0) {
+async function resRefreshDeviceValuesOnce(silent = false) {
+    if (!appState.resSerialConnected || appState.devices.length === 0) {
         return;
     }
 
     try {
-        const res = await fetch('/api/res/device_values');
-        const data = await res.json();
-        if (!res.ok || !data.success || !Array.isArray(data.devices)) {
-            return;
+        const data = await apiJson('/api/res/device_values');
+        if (!data.success || !Array.isArray(data.devices)) {
+            throw new Error(data.message || '刷新失败');
         }
 
-        const latestBySn = new Map(data.devices.map(d => [d.sn, d]));
-        devices = devices.map(d => latestBySn.has(d.sn) ? {...d, ...latestBySn.get(d.sn)} : d);
+        const latestBySn = new Map(data.devices.map((device) => [device.sn, device]));
+        appState.devices = appState.devices.map((device) => (
+            latestBySn.has(device.sn) ? {...device, ...latestBySn.get(device.sn)} : device
+        ));
 
-        for (const device of data.devices) {
-            const displayREl = document.getElementById(`res-display-r-${device.sn}`);
-            const displayTEl = document.getElementById(`res-display-t-${device.sn}`);
-            if (displayREl) {
-                displayREl.textContent = device.current_resistance || '--';
+        data.devices.forEach((device) => {
+            const key = deviceDomId(device.sn);
+            setText(`res-display-r-${key}`, device.current_resistance || '--');
+
+            const tempEl = $id(`res-display-t-${key}`);
+            if (tempEl) {
+                tempEl.textContent = appState.page === 'workspace'
+                    ? `T: ${device.current_temperature_display || '--'}`
+                    : (device.current_temperature_display || '--');
             }
-            if (displayTEl) {
-                displayTEl.textContent = `T: ${device.current_temperature_display || '--'}`;
-            }
+
+        });
+
+        if (!silent) {
+            showToast('设备当前值已刷新', 'info', 1800);
         }
-    } catch (e) {
-        console.error('刷新电阻值失败', e);
+    } catch (error) {
+        console.error('刷新设备当前值失败', error);
+        if (!silent) {
+            showToast(`刷新当前值失败: ${error.message || '未知错误'}`, 'error', 3600);
+        }
     }
 }
 
-// 渲染设备列表
 function renderDevices() {
-    const grid = document.getElementById('device-grid');
+    const grid = $id('device-grid');
+    if (!grid) {
+        return;
+    }
 
-    selectedDevices = new Set(
-        Array.from(selectedDevices).filter(sn => devices.some(d => d.sn === sn))
+    appState.selectedDevices = new Set(
+        Array.from(appState.selectedDevices).filter((sn) => appState.devices.some((device) => device.sn === sn))
     );
 
-    if (devices.length === 0) {
-        grid.innerHTML = '<div class="loading">暂无设备，请添加设备</div>';
+    if (!appState.resSerialConnected) {
+        grid.innerHTML = appState.page === 'workspace'
+            ? '<div class="loading">电阻串口未连接，请先到 <a href="/devices">设备管理</a> 页面完成连接。</div>'
+            : '<div class="loading">请先连接串口，再管理设备清单。</div>';
         updateSelectToggleButton();
+        updateResistanceHint();
+        return;
+    }
+
+    if (appState.devices.length === 0) {
+        grid.innerHTML = appState.page === 'workspace'
+            ? '<div class="loading">当前没有设备，请前往 <a href="/devices">设备管理</a> 页面添加。</div>'
+            : '<div class="loading">暂无设备，请添加设备后再进行管理。</div>';
+        updateSelectToggleButton();
+        updateResistanceHint();
         return;
     }
 
     grid.innerHTML = '';
-    devices.forEach((device, index) => {
-        const card = document.createElement('div');
-        card.className = 'device-card' + (selectedDevices.has(device.sn) ? ' selected' : '');
-        card.dataset.sn = device.sn;
-        card.draggable = true;
-        card.dataset.index = index;
-        card.style.cursor = 'move';
-
-        card.ondragstart = function(e) {
-            e.dataTransfer.setData('text/plain', index);
-            card.style.opacity = '0.5';
-        };
-
-        card.ondragend = function() {
-            card.style.opacity = '1';
-        };
-
-        card.ondragover = function(e) {
-            e.preventDefault();
-            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
-            if (fromIndex !== index) {
-                card.style.transform = 'scale(1.02)';
-                card.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.4)';
-                card.style.borderColor = '#667eea';
-            }
-        };
-
-        card.ondragleave = function() {
-            card.style.transform = '';
-            card.style.boxShadow = '';
-            card.style.borderColor = '';
-        };
-
-        card.ondrop = function(e) {
-            e.preventDefault();
-            card.style.transform = '';
-            card.style.boxShadow = '';
-            card.style.borderColor = '';
-            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
-            const toIndex = index;
-            if (fromIndex !== toIndex) {
-                // 交换位置
-                const movedDevice = devices.splice(fromIndex, 1)[0];
-                devices.splice(toIndex, 0, movedDevice);
-                renderDevices();
-                // 保存顺序到后端
-                saveDeviceOrder();
-            }
-        };
-
-        card.onclick = function(e) {
-            if (e.target.type !== 'checkbox' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') {
-                toggleDeviceSelect(device.sn);
-            }
-        };
-        card.oncontextmenu = function(e) {
-            e.preventDefault();
-            showContextMenu(e, device.sn);
-        };
-
-        card.innerHTML = `
-            <div class="device-card-header" style="position:relative;">
-                <input type="checkbox" ${selectedDevices.has(device.sn) ? 'checked' : ''}
-                       onclick="event.stopPropagation(); toggleDeviceSelect('${device.sn}')">
-                <span class="device-card-name">${device.name}</span>
-                <div id="res-display-${device.sn}" style="position:absolute;top:0;right:0;text-align:right;line-height:1.2;">
-                    <div id="res-display-r-${device.sn}" style="font-size:14px;font-weight:600;color:#667eea;">${device.current_resistance || '--'}</div>
-                    <div id="res-display-t-${device.sn}" style="font-size:12px;color:#718096;">T: ${device.current_temperature_display || '--'}</div>
-                </div>
-            </div>
-            <div class="device-card-sn">SN: ${device.sn}</div>
-            <div class="device-card-actions" style="flex-direction: column;gap:10px;">
-                <div style="display:flex;gap:4px;align-items:center;">
-                    <span style="font-size:11px;color:#666;min-width:18px;">R:</span>
-                    <input type="number" id="res-input-${device.sn}" placeholder="Ω" style="flex:1;padding:8px 10px;font-size:14px;border:1px solid #ddd;border-radius:4px;outline:none;background:#fafafa;" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter')resSetDeviceValue('${device.sn}', 'value')">
-                </div>
-                <div style="display:flex;gap:4px;align-items:center;">
-                    <span style="font-size:11px;color:#666;min-width:18px;">T:</span>
-                    <input type="number" id="res-temp-${device.sn}" placeholder="°C" style="flex:1;padding:8px 10px;font-size:14px;border:1px solid #ddd;border-radius:4px;outline:none;background:#fafafa;" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter')resSetDeviceValue('${device.sn}', 'temp')">
-                </div>
-            </div>
-        `;
-
+    appState.devices.forEach((device, index) => {
+        const card = appState.page === 'device-management'
+            ? renderManagementDeviceCard(device, index)
+            : renderWorkspaceDeviceCard(device);
         grid.appendChild(card);
     });
 
     updateSelectToggleButton();
+    updateResistanceHint();
 }
 
-// 切换设备选中状态
-function toggleDeviceSelect(sn) {
-    if (selectedDevices.has(sn)) {
-        selectedDevices.delete(sn);
-    } else {
-        selectedDevices.add(sn);
+function renderManagementDeviceCard(device, index) {
+    const selected = appState.selectedDevices.has(device.sn);
+    const key = deviceDomId(device.sn);
+    const card = document.createElement('article');
+
+    card.className = `device-card management-card${selected ? ' selected' : ''}`;
+    card.dataset.index = String(index);
+    card.dataset.sn = device.sn;
+    card.draggable = true;
+
+    card.innerHTML = `
+        <div class="device-card-head">
+            <div class="device-head-main">
+                <input type="checkbox" class="device-checkbox" ${selected ? 'checked' : ''}>
+                <div class="device-title-wrap">
+                    <div class="device-card-name">${escapeHtml(device.name)}</div>
+                    <div class="device-card-sn">SN: ${escapeHtml(device.sn)}</div>
+                </div>
+            </div>
+        </div>
+        <div class="device-metrics">
+            <div class="metric">
+                <span>电阻</span>
+                <strong id="res-display-r-${key}">${escapeHtml(device.current_resistance || '--')}</strong>
+            </div>
+            <div class="metric">
+                <span>温度</span>
+                <strong id="res-display-t-${key}">${escapeHtml(device.current_temperature_display || '--')}</strong>
+            </div>
+        </div>
+        <div class="device-card-hint">拖拽排序，右键编辑</div>
+    `;
+
+    const checkbox = card.querySelector('.device-checkbox');
+    if (checkbox) {
+        checkbox.addEventListener('click', (event) => {
+            event.stopPropagation();
+            toggleDeviceSelect(device.sn, {card, checkbox});
+        });
     }
-    renderDevices();
+
+    bindCardTapAnimation(card);
+
+    card.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        showContextMenu(event, device.sn);
+    });
+
+    card.addEventListener('dragstart', (event) => {
+        if (event.dataTransfer) {
+            event.dataTransfer.setData('text/plain', String(index));
+            event.dataTransfer.effectAllowed = 'move';
+        }
+        card.classList.add('dragging');
+    });
+
+    card.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+    });
+
+    card.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        card.classList.add('drag-over');
+    });
+
+    card.addEventListener('dragleave', () => {
+        card.classList.remove('drag-over');
+    });
+
+    card.addEventListener('drop', (event) => {
+        event.preventDefault();
+        card.classList.remove('drag-over');
+
+        const rawIndex = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
+        const fromIndex = Number.parseInt(rawIndex, 10);
+        const toIndex = index;
+
+        if (Number.isNaN(fromIndex) || fromIndex === toIndex) {
+            return;
+        }
+
+        const movedDevice = appState.devices.splice(fromIndex, 1)[0];
+        appState.devices.splice(toIndex, 0, movedDevice);
+        renderDevices();
+        saveDeviceOrder();
+    });
+
+    return card;
+}
+
+function renderWorkspaceDeviceCard(device) {
+    const selected = appState.selectedDevices.has(device.sn);
+    const key = deviceDomId(device.sn);
+    const card = document.createElement('article');
+
+    card.className = `device-card workspace-card${selected ? ' selected' : ''}`;
+    card.dataset.sn = device.sn;
+
+    card.innerHTML = `
+        <div class="device-card-head">
+            <div class="device-head-main">
+                <input type="checkbox" class="device-checkbox" ${selected ? 'checked' : ''}>
+                <div class="device-title-wrap">
+                    <div class="device-card-name">${escapeHtml(device.name)}</div>
+                    <div class="device-card-sn">SN: ${escapeHtml(device.sn)}</div>
+                </div>
+            </div>
+        </div>
+        <div class="workspace-reading">
+            <strong id="res-display-r-${key}">${escapeHtml(device.current_resistance || '--')}</strong>
+            <span id="res-display-t-${key}">T: ${escapeHtml(device.current_temperature_display || '--')}</span>
+        </div>
+        <div class="workspace-controls">
+            <label class="mini-field">
+                <span>电阻</span>
+                <div class="mini-input-group">
+                    <input type="number" id="res-input-${key}" placeholder="Ω">
+                    <button class="btn btn-primary btn-small">设置</button>
+                </div>
+            </label>
+            <label class="mini-field">
+                <span>温度</span>
+                <div class="mini-input-group">
+                    <input type="number" id="res-temp-${key}" placeholder="℃">
+                    <button class="btn btn-secondary btn-small">换算</button>
+                </div>
+            </label>
+        </div>
+    `;
+
+    const checkbox = card.querySelector('.device-checkbox');
+    const buttons = card.querySelectorAll('button');
+    const valueInput = $id(`res-input-${key}`);
+    const tempInput = $id(`res-temp-${key}`);
+
+    if (checkbox) {
+        checkbox.addEventListener('click', (event) => {
+            event.stopPropagation();
+            toggleDeviceSelect(device.sn, {card, checkbox});
+        });
+    }
+
+    bindCardTapAnimation(card);
+
+    if (buttons[0]) {
+        buttons[0].addEventListener('click', (event) => {
+            event.stopPropagation();
+            resSetDeviceValue(device.sn, 'value');
+        });
+    }
+
+    if (buttons[1]) {
+        buttons[1].addEventListener('click', (event) => {
+            event.stopPropagation();
+            resSetDeviceValue(device.sn, 'temp');
+        });
+    }
+
+    if (valueInput) {
+        valueInput.addEventListener('click', (event) => event.stopPropagation());
+        valueInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                resSetDeviceValue(device.sn, 'value');
+            }
+        });
+    }
+
+    if (tempInput) {
+        tempInput.addEventListener('click', (event) => event.stopPropagation());
+        tempInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                resSetDeviceValue(device.sn, 'temp');
+            }
+        });
+    }
+
+    return card;
+}
+
+function toggleDeviceSelect(sn, options = {}) {
+    const nextSelected = !appState.selectedDevices.has(sn);
+    if (nextSelected) {
+        appState.selectedDevices.add(sn);
+    } else {
+        appState.selectedDevices.delete(sn);
+    }
+
+    const card = options.card || null;
+    const checkbox = options.checkbox || null;
+    if (card) {
+        card.classList.toggle('selected', nextSelected);
+    }
+    if (checkbox) {
+        checkbox.checked = nextSelected;
+    }
+
+    updateSelectToggleButton();
+}
+
+function bindCardTapAnimation(card) {
+    const releaseCard = () => {
+        card.classList.remove('pressed');
+    };
+
+    card.addEventListener('pointerdown', (event) => {
+        if (!(event.target instanceof HTMLElement)) {
+            return;
+        }
+
+        if (event.target.closest('button, select, textarea, a, .workspace-controls')) {
+            return;
+        }
+
+        const input = event.target.closest('input');
+        if (input instanceof HTMLInputElement && input.type !== 'checkbox') {
+            return;
+        }
+
+        card.classList.add('pressed');
+    });
+
+    card.addEventListener('pointerup', releaseCard);
+    card.addEventListener('pointerleave', releaseCard);
+    card.addEventListener('pointercancel', releaseCard);
 }
 
 function resToggleSelectAll() {
-    if (devices.length === 0) {
+    if (!appState.resSerialConnected || appState.devices.length === 0) {
         return;
     }
 
-    const allSelected = devices.every(d => selectedDevices.has(d.sn));
+    const allSelected = appState.devices.every((device) => appState.selectedDevices.has(device.sn));
     if (allSelected) {
-        selectedDevices.clear();
+        appState.selectedDevices.clear();
     } else {
-        devices.forEach(d => selectedDevices.add(d.sn));
+        appState.devices.forEach((device) => appState.selectedDevices.add(device.sn));
     }
+
     renderDevices();
 }
 
 function updateSelectToggleButton() {
-    const btn = document.getElementById('btn-res-select-toggle');
-    if (!btn) {
+    const button = $id('btn-res-select-toggle');
+    if (!button) {
         return;
     }
 
-    if (devices.length === 0) {
-        btn.textContent = '全选';
-        btn.disabled = true;
+    if (!appState.resSerialConnected || appState.devices.length === 0) {
+        button.textContent = '全选';
+        button.disabled = true;
         return;
     }
 
-    btn.disabled = false;
-    const allSelected = devices.every(d => selectedDevices.has(d.sn));
-    btn.textContent = allSelected ? '取消全选' : '全选';
+    const allSelected = appState.devices.every((device) => appState.selectedDevices.has(device.sn));
+    button.textContent = allSelected ? '取消全选' : '全选';
+    button.disabled = false;
 }
 
 function initResQuickTemps() {
     try {
         const raw = localStorage.getItem(RES_QUICK_TEMP_STORAGE_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-                const nums = parsed
-                    .map(v => Number(v))
-                    .filter(v => !Number.isNaN(v))
-                    .slice(0, 3);
-                if (nums.length === 3) {
-                    resQuickTemps = nums;
-                }
-            }
+        if (!raw) {
+            renderQuickTempButtons();
+            return;
         }
-    } catch (e) {
-        console.error('加载常用温度配置失败', e);
+
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+            renderQuickTempButtons();
+            return;
+        }
+
+        const values = parsed
+            .map((item) => Number(item))
+            .filter((item) => !Number.isNaN(item))
+            .slice(0, 3);
+
+        if (values.length === 3) {
+            appState.resQuickTemps = values;
+        }
+    } catch (error) {
+        console.error('加载常用温度配置失败', error);
     }
+
     renderQuickTempButtons();
 }
 
 function renderQuickTempButtons() {
-    for (let i = 0; i < 3; i++) {
-        const btn = document.getElementById(`btn-res-quick-temp-${i}`);
-        if (!btn) {
+    for (let index = 0; index < 3; index += 1) {
+        const button = $id(`btn-res-quick-temp-${index}`);
+        if (!button) {
             continue;
         }
-        const value = resQuickTemps[i];
-        btn.textContent = `${value}℃`;
-        btn.title = `为选中设备设置 ${value}℃`;
+
+        const value = appState.resQuickTemps[index];
+        button.textContent = `${value}℃`;
+        button.title = `为选中设备设置 ${value}℃`;
     }
 }
 
 function resConfigQuickTemps() {
     const input = window.prompt(
-        '请输入 3 个常用温度（用英文逗号分隔），例如：-40,25,85',
-        resQuickTemps.join(',')
+        '请输入 3 个常用温度，使用英文逗号分隔，例如：-40,25,85',
+        appState.resQuickTemps.join(',')
     );
+
     if (input === null) {
         return;
     }
 
     const values = input
         .split(',')
-        .map(s => Number(s.trim()))
-        .filter(v => !Number.isNaN(v));
+        .map((item) => Number(item.trim()))
+        .filter((item) => !Number.isNaN(item));
 
     if (values.length !== 3) {
-        alert('请准确输入 3 个温度值。');
+        showToast('请准确输入 3 个温度值。', 'error', 3200);
         return;
     }
 
-    resQuickTemps = values;
+    appState.resQuickTemps = values;
     renderQuickTempButtons();
+
     try {
-        localStorage.setItem(RES_QUICK_TEMP_STORAGE_KEY, JSON.stringify(resQuickTemps));
-    } catch (e) {
-        console.error('保存常用温度配置失败', e);
+        localStorage.setItem(RES_QUICK_TEMP_STORAGE_KEY, JSON.stringify(values));
+    } catch (error) {
+        console.error('保存常用温度配置失败', error);
     }
 }
 
 function resBatchSetTemperatureByIndex(index) {
-    const temp = resQuickTemps[index];
-    if (typeof temp === 'undefined') {
+    const temperature = appState.resQuickTemps[index];
+    if (typeof temperature === 'undefined') {
         return;
     }
-    resBatchSetTemperature(temp);
+    resBatchSetTemperature(temperature);
 }
 
-// 添加设备
 async function resAddDevice() {
-    const name = document.getElementById('res-device-name').value.trim() || '未命名';
-    const sn = document.getElementById('res-device-sn').value.trim();
+    if (!appState.resSerialConnected) {
+        showToast('请先连接电阻串口。', 'info', 2400);
+        return;
+    }
+
+    const nameInput = $id('res-device-name');
+    const snInput = $id('res-device-sn');
+    if (!snInput) {
+        return;
+    }
+
+    const name = nameInput && nameInput.value.trim() ? nameInput.value.trim() : '未命名';
+    const sn = snInput.value.trim();
 
     if (!sn) {
-        alert('请输入 SN 码');
+        showToast('请输入设备 SN。', 'error', 2600);
         return;
     }
 
     try {
-        const res = await fetch('/api/res/devices', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: name, sn: sn})
-        });
-        const data = await res.json();
-
-        if (data.success) {
-            document.getElementById('res-device-name').value = '';
-            document.getElementById('res-device-sn').value = '';
-            await resLoadDevices();
-            await resRefreshDeviceValuesOnce();
-        } else {
-            alert(data.message);
+        const data = await apiJson('/api/res/devices', jsonOptions('POST', {name, sn}));
+        if (!data.success) {
+            throw new Error(data.message || '添加设备失败');
         }
-    } catch (e) {
-        console.error('添加设备失败', e);
+
+        if (nameInput) {
+            nameInput.value = '';
+        }
+        snInput.value = '';
+
+        await resLoadDevices();
+        await resRefreshDeviceValuesOnce(true);
+        showToast(`设备 ${sn} 已添加`, 'success', 2400);
+    } catch (error) {
+        console.error('添加设备失败', error);
+        showToast(`添加设备失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
-// 批量设备操作
 async function resDeviceAction(action) {
-    if (!resSerialConnected) {
-        alert('请先连接串口');
+    if (!appState.resSerialConnected) {
+        showToast('请先连接电阻串口。', 'info', 2400);
         return;
     }
 
-    const sns = Array.from(selectedDevices);
+    const sns = Array.from(appState.selectedDevices);
     if (sns.length === 0) {
-        alert('请先选择设备');
+        showToast('请先选择设备。', 'info', 2200);
         return;
     }
 
     try {
-        await fetch('/api/res/device_action', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action: action, sns: sns})
-        });
-        // 刷新设备列表
+        const data = await apiJson('/api/res/device_action', jsonOptions('POST', {action, sns}));
+        const results = Array.isArray(data.results) ? data.results : [];
+        const successCount = results.filter((item) => item.success).length;
+        const failCount = results.length - successCount;
+
         await resLoadDevices();
-    } catch (e) {
-        console.error('操作失败', e);
+        await resRefreshDeviceValuesOnce(true);
+
+        if (failCount === 0) {
+            showToast(`批量操作完成: ${successCount} 台设备成功`, 'success', 2600);
+        } else {
+            showToast(`批量操作完成: 成功 ${successCount} 台，失败 ${failCount} 台`, 'info', 3400);
+        }
+    } catch (error) {
+        console.error('批量设备操作失败', error);
+        showToast(`批量设备操作失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
 async function resBatchSetTemperature(temperature) {
-    if (!resSerialConnected) {
-        alert('请先连接串口');
+    if (!appState.resSerialConnected) {
+        showToast('请先连接电阻串口。', 'info', 2400);
         return;
     }
 
-    const sns = Array.from(selectedDevices);
+    const sns = Array.from(appState.selectedDevices);
     if (sns.length === 0) {
-        alert('请先选择设备');
+        showToast('请先选择设备。', 'info', 2200);
         return;
     }
 
@@ -573,98 +1101,87 @@ async function resBatchSetTemperature(temperature) {
 
     let successCount = 0;
     let failCount = 0;
+
     for (const sn of sns) {
         try {
-            const res = await fetch('/api/res/device_temp', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sn: sn, temperature: tempValue})
-            });
-            const data = await res.json();
-            if (!res.ok || !data.success) {
+            const data = await apiJson('/api/res/device_temp', jsonOptions('POST', {sn, temperature: tempValue}));
+            if (!data.success) {
                 throw new Error(data.message || '按温度设置失败');
             }
 
             const {resistanceText, temperatureText} = applyResDeviceStatus(sn, data);
             appendResLog(sn, 'temp', resistanceText, temperatureText);
             successCount += 1;
-        } catch (e) {
+        } catch (error) {
             failCount += 1;
-            console.error(`设备 ${sn} 按温度设置失败`, e);
+            console.error(`设备 ${sn} 按温度设置失败`, error);
         }
     }
 
     if (failCount === 0) {
         showToast(`已为 ${successCount} 台设备设置 ${tempValue}℃`, 'success', 3000);
     } else {
-        showToast(`温度设置完成：成功 ${successCount} 台，失败 ${failCount} 台`, 'info', 3600);
+        showToast(`温度设置完成: 成功 ${successCount} 台，失败 ${failCount} 台`, 'info', 3600);
     }
 }
 
-// 删除选中的设备
 async function resDeleteSelected() {
-    const sns = Array.from(selectedDevices);
+    const sns = Array.from(appState.selectedDevices);
     if (sns.length === 0) {
-        alert('请先选择要删除的设备');
+        showToast('请先选择要删除的设备。', 'info', 2200);
         return;
     }
 
-    if (!confirm(`确定要删除选中的 ${sns.length} 个设备吗？`)) {
+    if (!window.confirm(`确定要删除选中的 ${sns.length} 个设备吗？`)) {
         return;
     }
 
+    let successCount = 0;
     for (const sn of sns) {
         try {
-            await fetch(`/api/res/devices/${sn}`, {method: 'DELETE'});
-        } catch (e) {
-            console.error(`删除设备 ${sn} 失败`, e);
+            const data = await apiJson(`/api/res/devices/${encodeURIComponent(sn)}`, {method: 'DELETE'});
+            if (data.success) {
+                successCount += 1;
+            }
+        } catch (error) {
+            console.error(`删除设备 ${sn} 失败`, error);
         }
     }
 
-    selectedDevices.clear();
+    appState.selectedDevices.clear();
     await resLoadDevices();
+    showToast(`已删除 ${successCount} 台设备`, 'success', 2400);
 }
 
-// 设置设备电阻值或温度
 async function resSetDeviceValue(sn, type) {
-    let value;
-    let data;
+    if (!appState.resSerialConnected) {
+        showToast('请先连接电阻串口。', 'info', 2400);
+        return;
+    }
+
+    const key = deviceDomId(sn);
+    const input = $id(type === 'value' ? `res-input-${key}` : `res-temp-${key}`);
+    if (!input || !input.value) {
+        return;
+    }
 
     try {
-        if (type === 'value') {
-            const input = document.getElementById(`res-input-${sn}`);
-            value = input.value;
-            if (!value) return;
+        const payload = type === 'value'
+            ? {sn, value: input.value}
+            : {sn, temperature: Number.parseFloat(input.value)};
+        const endpoint = type === 'value' ? '/api/res/device_value' : '/api/res/device_temp';
+        const data = await apiJson(endpoint, jsonOptions('POST', payload));
 
-            const res = await fetch('/api/res/device_value', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sn: sn, value: value})
-            });
-            data = await res.json();
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || '设置电阻值失败');
-            }
-        } else {
-            const input = document.getElementById(`res-temp-${sn}`);
-            value = input.value;
-            if (!value) return;
-
-            const res = await fetch('/api/res/device_temp', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sn: sn, temperature: parseFloat(value)})
-            });
-            data = await res.json();
-            if (!res.ok || !data.success) {
-                throw new Error(data.message || '按温度设置失败');
-            }
+        if (!data.success) {
+            throw new Error(data.message || '设置失败');
         }
 
         const {resistanceText, temperatureText} = applyResDeviceStatus(sn, data);
         appendResLog(sn, type, resistanceText, temperatureText);
-    } catch (e) {
-        console.error('设置失败', e);
+        input.value = '';
+    } catch (error) {
+        console.error('设置设备值失败', error);
+        showToast(`设置失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
@@ -672,280 +1189,340 @@ function applyResDeviceStatus(sn, data) {
     const resistanceText = data.current_resistance || '--';
     const temperatureText = data.current_temperature_display || '--';
 
-    const target = devices.find(d => d.sn === sn);
+    const target = appState.devices.find((device) => device.sn === sn);
     if (target) {
         target.current_resistance = resistanceText;
         target.current_temperature_display = temperatureText;
         if (typeof data.current_temperature !== 'undefined') {
             target.current_temperature = data.current_temperature;
         }
-        target.connected = true;
+        if (typeof data.connected !== 'undefined') {
+            target.connected = data.connected;
+        } else {
+            target.connected = true;
+        }
     }
 
-    const displayREl = document.getElementById(`res-display-r-${sn}`);
-    const displayTEl = document.getElementById(`res-display-t-${sn}`);
-    if (displayREl) {
-        displayREl.textContent = resistanceText;
-    }
-    if (displayTEl) {
-        displayTEl.textContent = `T: ${temperatureText}`;
+    const key = deviceDomId(sn);
+    setText(`res-display-r-${key}`, resistanceText);
+
+    const tempEl = $id(`res-display-t-${key}`);
+    if (tempEl) {
+        tempEl.textContent = appState.page === 'workspace'
+            ? `T: ${temperatureText}`
+            : temperatureText;
     }
 
     return {resistanceText, temperatureText};
 }
 
 function appendResLog(sn, type, resistanceText, temperatureText) {
-    const device = devices.find(d => d.sn === sn);
-    const deviceName = device ? device.name : sn;
-    const logValueText = type === 'temp'
-        ? `T=${temperatureText} (${resistanceText})`
-        : `R=${resistanceText}`;
-
-    const logEl = document.getElementById('res-log');
+    const logEl = $id('res-log');
     if (!logEl) {
         return;
     }
-    const time = new Date().toLocaleTimeString();
+
+    const device = appState.devices.find((item) => item.sn === sn);
+    const deviceName = device ? device.name : sn;
+    const valueText = type === 'temp'
+        ? `T=${temperatureText} (${resistanceText})`
+        : `R=${resistanceText}`;
+
     const line = document.createElement('div');
-    line.textContent = `[${time}] ${deviceName}: ${logValueText}`;
-    line.style.marginTop = '3px';
+    line.className = 'log-line';
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${deviceName}: ${valueText}`;
     logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
 }
 
-// 保存设备顺序到后端
 async function saveDeviceOrder() {
-    const order = devices.map(d => d.sn);
     try {
-        await fetch('/api/res/devices/order', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({order: order})
-        });
-    } catch (e) {
-        console.error('保存设备顺序失败', e);
+        await apiJson('/api/res/devices/order', jsonOptions('POST', {
+            order: appState.devices.map((device) => device.sn),
+        }));
+    } catch (error) {
+        console.error('保存设备顺序失败', error);
+        showToast(`保存设备顺序失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
-// 清除日志
 function clearResLog() {
-    const logEl = document.getElementById('res-log');
+    const logEl = $id('res-log');
     if (logEl) {
-        logEl.innerHTML = '<div style="color: #718096;">日志记录...</div>';
+        logEl.innerHTML = '<div class="placeholder">日志记录...</div>';
     }
 }
 
-// 显示右键菜单
-function showContextMenu(e, sn) {
-    e.preventDefault();
-    contextMenuSN = sn;
-    const menu = document.getElementById('context-menu');
+function showContextMenu(event, sn) {
+    const menu = $id('context-menu');
+    if (!menu) {
+        return;
+    }
+
+    appState.contextMenuSN = sn;
     menu.style.display = 'block';
-    menu.style.left = e.clientX + 'px';
-    menu.style.top = e.clientY + 'px';
+
+    const gap = 12;
+    const menuWidth = menu.offsetWidth || 140;
+    const menuHeight = menu.offsetHeight || 92;
+    const left = Math.min(event.clientX, window.innerWidth - menuWidth - gap);
+    const top = Math.min(event.clientY, window.innerHeight - menuHeight - gap);
+
+    menu.style.left = `${Math.max(gap, left)}px`;
+    menu.style.top = `${Math.max(gap, top)}px`;
 }
 
-// 从菜单重命名设备
+function closeContextMenu() {
+    const menu = $id('context-menu');
+    if (menu) {
+        menu.style.display = 'none';
+    }
+}
+
 function resRenameDeviceFromMenu() {
-    if (!contextMenuSN) return;
+    if (!appState.contextMenuSN) {
+        return;
+    }
 
-    const device = devices.find(d => d.sn === contextMenuSN);
-    if (!device) return;
+    const device = appState.devices.find((item) => item.sn === appState.contextMenuSN);
+    if (!device) {
+        closeContextMenu();
+        return;
+    }
 
-    document.getElementById('rename-input').value = device.name;
-    document.getElementById('rename-modal').style.display = 'flex';
-    document.getElementById('rename-input').focus();
+    setValue('rename-input', device.name);
+    const modal = $id('rename-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
 
-    document.getElementById('context-menu').style.display = 'none';
+    closeContextMenu();
+
+    const input = $id('rename-input');
+    if (input) {
+        input.focus();
+        input.select();
+    }
 }
 
-// 从菜单删除设备
 async function resDeleteDeviceFromMenu() {
-    if (!contextMenuSN) return;
+    if (!appState.contextMenuSN) {
+        return;
+    }
 
-    if (!confirm('确定要删除这个设备吗？')) {
-        document.getElementById('context-menu').style.display = 'none';
+    if (!window.confirm('确定要删除这个设备吗？')) {
+        closeContextMenu();
         return;
     }
 
     try {
-        await fetch(`/api/res/devices/${contextMenuSN}`, {method: 'DELETE'});
-        selectedDevices.delete(contextMenuSN);
+        const data = await apiJson(`/api/res/devices/${encodeURIComponent(appState.contextMenuSN)}`, {method: 'DELETE'});
+        if (!data.success) {
+            throw new Error(data.message || '删除失败');
+        }
+
+        appState.selectedDevices.delete(appState.contextMenuSN);
         await resLoadDevices();
-    } catch (e) {
-        console.error('删除设备失败', e);
+        showToast('设备已删除', 'success', 2200);
+    } catch (error) {
+        console.error('删除设备失败', error);
+        showToast(`删除设备失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 
-    document.getElementById('context-menu').style.display = 'none';
+    closeContextMenu();
 }
 
-// 关闭重命名模态框
 function closeRenameModal() {
-    document.getElementById('rename-modal').style.display = 'none';
-    contextMenuSN = null;
+    const modal = $id('rename-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    appState.contextMenuSN = null;
 }
 
-// 保存重命名
 async function saveRename() {
-    const newName = document.getElementById('rename-input').value.trim();
-    if (!newName || !contextMenuSN) {
+    const input = $id('rename-input');
+    if (!input || !appState.contextMenuSN) {
+        closeRenameModal();
+        return;
+    }
+
+    const newName = input.value.trim();
+    if (!newName) {
         closeRenameModal();
         return;
     }
 
     try {
-        await fetch(`/api/res/devices/${contextMenuSN}`, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: newName})
-        });
+        const data = await apiJson(
+            `/api/res/devices/${encodeURIComponent(appState.contextMenuSN)}`,
+            jsonOptions('PUT', {name: newName})
+        );
+        if (!data.success) {
+            throw new Error(data.message || '重命名失败');
+        }
+
         await resLoadDevices();
-    } catch (e) {
-        console.error('重命名失败', e);
+        showToast('设备名称已更新', 'success', 2200);
+    } catch (error) {
+        console.error('重命名设备失败', error);
+        showToast(`重命名失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 
     closeRenameModal();
 }
 
-// ===== 电源控制 =====
 async function powerRefreshResources() {
+    const select = $id('power-address');
+    if (!select) {
+        return;
+    }
+
     try {
-        const res = await fetch('/api/power/list_resources');
-        const data = await res.json();
-        const select = document.getElementById('power-address');
+        const data = await apiJson('/api/power/list_resources');
+        const current = appState.connection.powerAddress || select.value;
+
         select.innerHTML = '<option value="">请选择电源...</option>';
-        data.resources.forEach(item => {
+        (data.resources || []).forEach((item) => {
             const address = typeof item === 'string' ? item : (item.address || '');
             const label = typeof item === 'string' ? item : (item.label || address);
             if (!address) {
                 return;
             }
-            select.innerHTML += `<option value="${address}">${label}</option>`;
-        });
-    } catch (e) {
-        console.error('获取资源列表失败', e);
-    }
-}
 
-async function powerConnect() {
-    const address = document.getElementById('power-address').value;
-    if (!address) {
-        return;
-    }
-
-    try {
-        const res = await fetch('/api/power/connect', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({address: address})
+            const option = document.createElement('option');
+            option.value = address;
+            option.textContent = label;
+            select.appendChild(option);
         });
-        const data = await res.json();
-        if (data.success) {
-            powerConnected = true;
-            state.power_address = address;
-            document.getElementById('power-title-status').textContent = '已连接';
-            togglePowerButtons(true);
-            startPowerAutoRefresh();
+
+        ensureOption(select, current);
+        if (current) {
+            select.value = current;
         }
-    } catch (e) {
-        console.error('连接失败', e);
-    }
-}
-
-async function powerDisconnect() {
-    try {
-        const res = await fetch('/api/power/disconnect', {
-            method: 'POST'
-        });
-        const data = await res.json();
-        if (data.success) {
-            powerConnected = false;
-            state.power_address = null;
-            document.getElementById('power-title-status').textContent = '';
-            togglePowerButtons(false);
-            stopPowerAutoRefresh();
-        }
-    } catch (e) {
-        console.error('断开失败', e);
+    } catch (error) {
+        console.error('获取电源资源失败', error);
+        showToast(`获取电源资源失败: ${error.message || '未知错误'}`, 'error', 3600);
+    } finally {
+        powerAddressChanged();
     }
 }
 
 function powerAddressChanged() {
-    const address = document.getElementById('power-address').value;
-    document.getElementById('btn-power-connect').disabled = !address || powerConnected;
+    const select = $id('power-address');
+    const button = $id('btn-power-connect');
+    if (!select || !button) {
+        return;
+    }
+
+    button.disabled = !appState.powerConnected && !select.value;
 }
 
 async function powerToggleConnect() {
-    if (powerConnected) {
+    if (appState.powerConnected) {
         await powerDisconnect();
     } else {
         await powerConnect();
     }
 }
 
-function togglePowerButtons(connected) {
-    document.getElementById('btn-power-connect').textContent = connected ? '断开' : '连接';
-    document.getElementById('power-address').disabled = connected;
-}
-
-async function powerSetParams() {
-    if (!powerConnected) {
+async function powerConnect() {
+    const select = $id('power-address');
+    if (!select || !select.value) {
         return;
     }
 
-    const voltage = document.getElementById('power-voltage').value;
-    const current = document.getElementById('power-current').value;
+    try {
+        const data = await apiJson('/api/power/connect', jsonOptions('POST', {address: select.value}));
+        if (!data.success) {
+            throw new Error(data.message || '连接失败');
+        }
+
+        applyPowerState({connected: true, address: select.value});
+        showToast('电源已连接', 'success', 2400);
+    } catch (error) {
+        console.error('连接电源失败', error);
+        showToast(`连接电源失败: ${error.message || '未知错误'}`, 'error', 3600);
+    }
+}
+
+async function powerDisconnect() {
+    try {
+        const data = await apiJson('/api/power/disconnect', {method: 'POST'});
+        if (!data.success) {
+            throw new Error(data.message || '断开失败');
+        }
+
+        applyPowerState({connected: false, address: null});
+        showToast('电源已断开', 'info', 2200);
+    } catch (error) {
+        console.error('断开电源失败', error);
+        showToast(`断开电源失败: ${error.message || '未知错误'}`, 'error', 3600);
+    }
+}
+
+async function powerSetParams() {
+    if (!appState.powerConnected) {
+        showToast('请先在设备管理页连接电源。', 'info', 2400);
+        return;
+    }
+
+    const voltageValue = $id('power-voltage') ? $id('power-voltage').value : '';
+    const currentValue = $id('power-current') ? $id('power-current').value : '';
+    const payload = {};
+
+    if (voltageValue !== '') {
+        payload.voltage = Number.parseFloat(voltageValue);
+    }
+    if (currentValue !== '') {
+        payload.current = Number.parseFloat(currentValue);
+    }
 
     try {
-        const body = {};
-        if (voltage) body.voltage = parseFloat(voltage);
-        if (current) body.current = parseFloat(current);
-
-        await fetch('/api/power/set', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)
-        });
-    } catch (e) {
-        console.error('设置参数失败', e);
+        await apiJson('/api/power/set', jsonOptions('POST', payload));
+    } catch (error) {
+        console.error('设置电源参数失败', error);
+        showToast(`设置电源参数失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
 async function powerSetOutput(on) {
-    if (!powerConnected) {
+    if (!appState.powerConnected) {
+        showToast('请先在设备管理页连接电源。', 'info', 2400);
         return;
     }
 
     try {
-        await fetch('/api/power/set', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({output: on})
-        });
-    } catch (e) {
-        console.error('设置输出失败', e);
+        await apiJson('/api/power/set', jsonOptions('POST', {output: on}));
+    } catch (error) {
+        console.error('设置电源输出失败', error);
+        showToast(`设置电源输出失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
 async function powerMeasure() {
-    if (!powerConnected) {
+    if (!appState.powerConnected) {
         return;
     }
 
     try {
-        const res = await fetch('/api/power/measure');
-        const data = await res.json();
-        if (!data.error) {
-            document.getElementById('power-measure').textContent =
-                `${data.voltage.toFixed(4)} V, ${data.current.toFixed(4)} A`;
+        const data = await apiJson('/api/power/measure');
+        if (!data.error && typeof data.voltage === 'number' && typeof data.current === 'number') {
+            setText('power-measure', `${data.voltage.toFixed(4)} V, ${data.current.toFixed(4)} A`);
         }
-    } catch (e) {
-        console.error('测量失败', e);
+    } catch (error) {
+        console.error('测量电源失败', error);
     }
 }
 
 function startPowerAutoRefresh() {
     stopPowerAutoRefresh();
+
+    if (appState.page !== 'workspace' || !appState.powerConnected) {
+        return;
+    }
+
+    powerMeasure();
     powerRefreshTimer = setInterval(powerMeasure, 1000);
 }
 
@@ -956,148 +1533,143 @@ function stopPowerAutoRefresh() {
     }
 }
 
-// ===== 示波器控制 =====
-async function scopeConnect() {
-    const serial = document.getElementById('scope-serial').value;
-    if (!serial) {
+function scopeSerialChanged() {
+    const input = $id('scope-serial');
+    const button = $id('btn-scope-connect');
+    if (!input || !button) {
         return;
     }
 
-    try {
-        const res = await fetch('/api/scope/connect', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({serial: serial})
-        });
-        const data = await res.json();
-        if (data.success) {
-            scopeConnected = true;
-            state.scope_serial = serial;
-            document.getElementById('scope-title-status').textContent = '已连接';
-            toggleScopeButtons(true);
-
-            // 锁定示波器
-            await fetch('/api/scope/lock', { method: 'POST' });
-            scopeLocked = true;
-            document.getElementById('btn-scope-lock').textContent = '解锁';
-
-            // 获取通道状态并同步
-            scopeSyncChannelState();
-            // 启动自动刷新
-            startAutoRefresh();
-        }
-    } catch (e) {
-        console.error('连接失败', e);
-    }
-}
-
-async function scopeDisconnect() {
-    try {
-        const res = await fetch('/api/scope/disconnect', {
-            method: 'POST'
-        });
-        const data = await res.json();
-        if (data.success) {
-            scopeConnected = false;
-            state.scope_serial = null;
-            document.getElementById('scope-title-status').textContent = '';
-            stopAutoRefresh();
-            toggleScopeButtons(false);
-        }
-    } catch (e) {
-        console.error('断开失败', e);
-    }
-}
-
-function scopeSerialChanged() {
-    const serial = document.getElementById('scope-serial').value;
-    document.getElementById('btn-scope-connect').disabled = !serial || scopeConnected;
+    button.disabled = !appState.scopeConnected && !input.value.trim();
 }
 
 async function scopeToggleConnect() {
-    if (scopeConnected) {
+    if (appState.scopeConnected) {
         await scopeDisconnect();
     } else {
         await scopeConnect();
     }
 }
 
-function toggleScopeButtons(connected) {
-    document.getElementById('btn-scope-connect').textContent = connected ? '断开' : '连接';
-    document.getElementById('scope-serial').disabled = connected;
-    document.getElementById('btn-scope-lock').style.display = connected ? 'inline-block' : 'none';
-    document.getElementById('btn-scope-copy').style.display = connected ? 'inline-block' : 'none';
-    document.getElementById('btn-scope-copy').disabled = !connected;
-    // 更新通道卡片颜色
-    for (let i = 1; i <= 4; i++) {
-        const ch = document.getElementById(`scope-ch${i}`);
-        if (ch) {
-            if (connected) {
-                ch.classList.remove('disconnected');
-            } else {
-                ch.classList.add('disconnected');
-            }
+async function scopeConnect() {
+    const input = $id('scope-serial');
+    if (!input || !input.value.trim()) {
+        return;
+    }
+
+    const serial = input.value.trim();
+
+    try {
+        const data = await apiJson('/api/scope/connect', jsonOptions('POST', {serial}));
+        if (!data.success) {
+            throw new Error(data.message || '连接失败');
         }
+
+        applyScopeState({
+            connected: true,
+            serial,
+            locked: typeof data.locked === 'boolean' ? data.locked : false,
+        });
+
+        if (appState.page === 'workspace') {
+            await scopeSyncChannelState(true);
+        }
+
+        showToast(
+            appState.scopeLocked ? '示波器已连接，当前为远程锁定状态' : '示波器已连接，本地控制已解锁',
+            'success',
+            2400
+        );
+    } catch (error) {
+        console.error('连接示波器失败', error);
+        showToast(`连接示波器失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
-let scopeLocked = true;  // 远程模式为锁定
+async function scopeDisconnect() {
+    try {
+        const data = await apiJson('/api/scope/disconnect', {method: 'POST'});
+        if (!data.success) {
+            throw new Error(data.message || '断开失败');
+        }
+
+        applyScopeState({connected: false, serial: null});
+        showToast('示波器已断开', 'info', 2200);
+    } catch (error) {
+        console.error('断开示波器失败', error);
+        showToast(`断开示波器失败: ${error.message || '未知错误'}`, 'error', 3600);
+    }
+}
 
 async function scopeToggleLock() {
+    if (!appState.scopeConnected) {
+        showToast('请先在设备管理页连接示波器。', 'info', 2400);
+        return;
+    }
+
     try {
-        const url = scopeLocked ? '/api/scope/unlock' : '/api/scope/lock';
-        const res = await fetch(url, {
-            method: 'POST'
-        });
-        const data = await res.json();
-        if (data.success) {
-            scopeLocked = !scopeLocked;
-            document.getElementById('btn-scope-lock').textContent = scopeLocked ? '解锁' : '锁定';
+        const endpoint = appState.scopeLocked ? '/api/scope/unlock' : '/api/scope/lock';
+        const data = await apiJson(endpoint, {method: 'POST'});
+        if (!data.success) {
+            throw new Error(data.message || '操作失败');
         }
-    } catch (e) {
-        console.error('操作失败', e);
+
+        appState.scopeLocked = !appState.scopeLocked;
+        toggleScopeWorkspaceControls(appState.scopeConnected);
+        updateScopeHint();
+        await scopeSyncChannelState(true);
+        checkAllChannelsClosed();
+
+        showToast(
+            appState.scopeLocked ? '示波器已锁定为远程控制' : '示波器已解锁，本地面板可直接操作',
+            'info',
+            2600
+        );
+    } catch (error) {
+        console.error('切换示波器锁定失败', error);
+        showToast(`切换示波器锁定失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
 async function scopeCopyScreenshot() {
-    if (!scopeConnected) {
+    if (!appState.scopeConnected) {
+        showToast('请先在设备管理页连接示波器。', 'info', 2400);
         return;
     }
 
-    const btn = document.getElementById('btn-scope-copy');
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '复制中...';
+    const button = $id('btn-scope-copy');
+    if (!button) {
+        return;
+    }
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = '复制中...';
     stopAutoRefresh();
 
     try {
-        const res = await fetch('/api/scope/copy_screenshot', {
-            method: 'POST'
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-            throw new Error(data.message || '复制示波器截图失败');
+        const data = await apiJson('/api/scope/copy_screenshot', {method: 'POST'});
+        if (!data.success) {
+            throw new Error(data.message || '截图失败');
         }
 
-        const imageRes = await fetch(data.download_url, {
-            method: 'GET',
-            cache: 'no-store'
-        });
-        if (!imageRes.ok) {
+        const imageResponse = await fetch(data.download_url, {method: 'GET', cache: 'no-store'});
+        if (!imageResponse.ok) {
             throw new Error('获取截图文件失败');
         }
-        const imageBlob = await imageRes.blob();
 
+        const imageBlob = await imageResponse.blob();
         let copied = false;
         let copyFailReason = '';
+
         if (window.isSecureContext && navigator.clipboard && window.ClipboardItem) {
             try {
                 const mimeType = imageBlob.type || 'image/png';
                 const item = new ClipboardItem({[mimeType]: imageBlob});
                 await navigator.clipboard.write([item]);
                 copied = true;
-            } catch (err) {
-                copyFailReason = err?.message || '浏览器未授权图片剪贴板';
+            } catch (error) {
+                copyFailReason = error && error.message ? error.message : '浏览器未授权图片剪贴板';
             }
         } else if (!window.isSecureContext) {
             copyFailReason = '当前页面不是 HTTPS/localhost，浏览器禁止直接写入系统剪贴板';
@@ -1112,12 +1684,12 @@ async function scopeCopyScreenshot() {
 
         const filename = data.filename || 'scope_screenshot.png';
         const localUrl = URL.createObjectURL(imageBlob);
-        const a = document.createElement('a');
-        a.href = localUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+        const link = document.createElement('a');
+        link.href = localUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
         setTimeout(() => URL.revokeObjectURL(localUrl), 1000);
 
         showToast(
@@ -1125,133 +1697,175 @@ async function scopeCopyScreenshot() {
             'info',
             5200
         );
-    } catch (e) {
-        console.error('复制示波器截图失败', e);
-        showToast('复制示波器截图失败: ' + (e.message || '未知错误'), 'error', 4200);
+    } catch (error) {
+        console.error('复制示波器截图失败', error);
+        showToast(`复制示波器截图失败: ${error.message || '未知错误'}`, 'error', 4200);
     } finally {
-        btn.textContent = originalText;
-        btn.disabled = !scopeConnected;
-        if (scopeConnected) {
+        button.textContent = originalText;
+        button.disabled = !appState.scopeConnected;
+        if (appState.scopeConnected) {
             checkAllChannelsClosed();
         }
     }
 }
 
-function scopeUpdateInterval() {
-    // 重新设置刷新定时器
-    startAutoRefresh();
+async function scopeUpdateInterval() {
+    const intervalInput = $id('scope-interval');
+    if (!intervalInput) {
+        return;
+    }
+
+    const interval = Number.parseInt(intervalInput.value, 10) || 1000;
+
+    try {
+        await apiJson('/api/scope/config', jsonOptions('POST', {refresh_interval: interval}));
+    } catch (error) {
+        console.error('更新示波器刷新周期失败', error);
+    }
+
+    if (appState.scopeConnected) {
+        checkAllChannelsClosed();
+    }
 }
 
 async function scopeSyncChannelState() {
-    if (!scopeConnected) {
+    if (!appState.scopeConnected) {
         return;
     }
 
     try {
-        const res = await fetch('/api/scope/channel_state');
-        const data = await res.json();
-        if (data.channels) {
-            for (let i = 1; i <= 4; i++) {
-                const enabled = data.channels[`ch${i}`];
-                scopeChannelStates[i] = enabled || false;
-                updateChannelStyle(i, scopeChannelStates[i]);
-            }
+        const data = await apiJson('/api/scope/channel_state');
+        const channels = data.channels || {};
+
+        for (let channel = 1; channel <= 4; channel += 1) {
+            const enabled = Boolean(channels[`ch${channel}`]);
+            appState.scopeChannelStates[channel] = enabled;
+            updateChannelStyle(channel, enabled);
         }
-        // 检查是否需要启动自动刷新
+
         checkAllChannelsClosed();
-    } catch (e) {
-        console.error('获取通道状态失败', e);
+    } catch (error) {
+        console.error('获取示波器通道状态失败', error);
     }
 }
 
-// 更新通道样式
 function updateChannelStyle(channel, enabled) {
-    const el = document.getElementById(`scope-ch${channel}`);
-    const labelEl = el.querySelector('.ch-label');
-    if (enabled) {
-        el.classList.remove('disabled');
-        if (labelEl) {
-            labelEl.style.color = '#333';
-        }
-    } else {
-        el.classList.add('disabled');
-        // 关闭通道时清除数值显示
-        const valueEl = el.querySelector('.ch-value');
-        if (valueEl) {
-            valueEl.textContent = '--';
-        }
-        // 变灰通道号
-        if (labelEl) {
-            labelEl.style.color = '#999';
-        }
-    }
-}
-
-// 点击通道切换开关
-async function scopeToggleChannel(channel) {
-    if (!scopeConnected) {
+    const card = $id(`scope-ch${channel}`);
+    if (!card) {
         return;
     }
 
-    // 切换状态
-    const newState = !scopeChannelStates[channel];
-    scopeChannelStates[channel] = newState;
-    updateChannelStyle(channel, newState);
+    card.classList.toggle('disabled', !enabled);
+    card.classList.toggle('disconnected', !appState.scopeConnected);
 
-    try {
-        await fetch('/api/scope/channel', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({channel: channel, enable: newState})
-        });
+    const labelEl = card.querySelector('.ch-label');
+    if (labelEl) {
+        labelEl.style.color = enabled && appState.scopeConnected ? '#11211f' : '#87908d';
+    }
 
-        // 检查是否所有通道都关闭
-        checkAllChannelsClosed();
-    } catch (e) {
-        console.error('设置通道开关失败', e);
+    const valueEl = card.querySelector('.ch-value');
+    if (valueEl && !enabled) {
+        valueEl.textContent = '--';
     }
 }
 
-// 检查是否所有通道都关闭
+async function scopeToggleChannel(channel) {
+    if (!appState.scopeConnected) {
+        return;
+    }
+
+    const previousState = Boolean(appState.scopeChannelStates[channel]);
+    const nextState = !previousState;
+    appState.scopeChannelStates[channel] = nextState;
+    updateChannelStyle(channel, nextState);
+
+    try {
+        const data = await apiJson('/api/scope/channel', jsonOptions('POST', {channel, enable: nextState}));
+        if (!data.success) {
+            throw new Error(data.message || '设置失败');
+        }
+
+        await syncScopeConfigChannels();
+        checkAllChannelsClosed();
+    } catch (error) {
+        console.error('设置示波器通道开关失败', error);
+        appState.scopeChannelStates[channel] = previousState;
+        updateChannelStyle(channel, previousState);
+        showToast(`设置通道 CH${channel} 失败: ${error.message || '未知错误'}`, 'error', 3600);
+    }
+}
+
+async function syncScopeConfigChannels() {
+    try {
+        await apiJson('/api/scope/config', jsonOptions('POST', {
+            channels: Object.keys(appState.scopeChannelStates)
+                .filter((channel) => appState.scopeChannelStates[channel])
+                .map((channel) => Number(channel)),
+        }));
+    } catch (error) {
+        console.error('同步示波器通道配置失败', error);
+    }
+}
+
 function checkAllChannelsClosed() {
-    const allClosed = !Object.values(scopeChannelStates).some(v => v);
-    if (allClosed) {
+    if (appState.page !== 'workspace' || !appState.scopeConnected) {
         stopAutoRefresh();
-    } else {
+        return;
+    }
+
+    const anyOpen = Object.values(appState.scopeChannelStates).some(Boolean);
+    if (anyOpen) {
         startAutoRefresh();
+    } else {
+        stopAutoRefresh();
     }
 }
 
 async function scopeGetMean() {
-    if (!scopeConnected) {
+    if (!appState.scopeConnected) {
         return;
     }
 
     try {
-        const res = await fetch('/api/scope/get_mean');
-        const data = await res.json();
-        if (!data.error && data.channels) {
-            const channels = data.channels;
-            for (let i = 1; i <= 4; i++) {
-                const chKey = 'ch' + i;
-                const val = channels[chKey];
-                const el = document.querySelector(`#scope-ch${i} .ch-value`);
-                // 只更新有效值，null、undefined 或 NaN 时显示 --
-                if (el && val !== undefined && val !== null && !isNaN(val)) {
-                    el.textContent = `${val.toFixed(3)}`;
-                } else if (el) {
-                    el.textContent = '--';
-                }
+        const data = await apiJson('/api/scope/get_mean');
+        if (!data.channels) {
+            return;
+        }
+
+        for (let channel = 1; channel <= 4; channel += 1) {
+            const valueEl = document.querySelector(`#scope-ch${channel} .ch-value`);
+            if (!valueEl) {
+                continue;
+            }
+
+            if (!appState.scopeChannelStates[channel]) {
+                valueEl.textContent = '--';
+                continue;
+            }
+
+            const rawValue = data.channels[`ch${channel}`];
+            if (rawValue === null || rawValue === undefined || Number.isNaN(rawValue)) {
+                valueEl.textContent = '--';
+            } else {
+                valueEl.textContent = Number(rawValue).toFixed(3);
             }
         }
-    } catch (e) {
-        // 读取失败时不显示错误，数值保持不变
+    } catch (error) {
+        console.error('获取示波器平均值失败', error);
     }
 }
 
 function startAutoRefresh() {
     stopAutoRefresh();
-    const interval = parseInt(document.getElementById('scope-interval').value) || 1000;
+
+    if (appState.page !== 'workspace' || !appState.scopeConnected) {
+        return;
+    }
+
+    const intervalInput = $id('scope-interval');
+    const interval = intervalInput ? (Number.parseInt(intervalInput.value, 10) || 1000) : 1000;
+
+    scopeGetMean();
     scopeRefreshTimer = setInterval(scopeGetMean, interval);
 }
 

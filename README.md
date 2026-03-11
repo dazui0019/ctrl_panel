@@ -2,6 +2,10 @@
 
 基于 Flask 的设备控制面板，用于控制电阻、电源和示波器。
 
+当前前端已拆成两个页面：
+- `/workspace`：工作页面，用于设置电阻值、查看示波器通道和电源测量数据
+- `/devices`：设备管理页面，用于串口/电源/示波器连接，以及电阻设备清单维护
+
 ## 功能特性
 
 ### 电阻控制 (支持 RS485 多设备)
@@ -22,7 +26,8 @@
 
 ### 示波器控制
 - USB 序列号连接
-- 自动锁定远程模式
+- 连接后默认解锁本地面板，可同时保留网页侧读写
+- 可手动切换“本地可操作 / 远程锁定”状态
 - 通道开关：点击通道卡片切换 CH1-CH4
 - 平均值显示 (mV/mA)
 - 自动刷新 (可设置间隔 500-10000ms)
@@ -41,6 +46,8 @@ uv run python app.py
 ```
 
 然后在浏览器打开: http://127.0.0.1:5000
+
+默认访问 `/` 会自动跳转到 `/workspace`。
 
 ### 后台启动/停止脚本
 
@@ -88,6 +95,7 @@ FLASK_SSL_MODE=files FLASK_SSL_CERT=/path/to/fullchain.pem FLASK_SSL_KEY=/path/t
 ### 示波器
 - 通过 USB 连接
 - 默认序列号: 90Y701585
+- 连接成功后会立即发送本地解锁命令，前面板按键可直接使用
 
 ## 项目结构
 
@@ -96,12 +104,14 @@ ctrl_panel/
 ├── app.py              # Flask 主应用
 ├── device_runtime.py   # 设备控制器与运行时状态
 ├── templates/
-│   └── index.html     # 前端页面
+│   ├── base.html              # 共享页面骨架
+│   ├── workspace.html         # 工作页面
+│   └── device_management.html # 设备管理页面
 ├── static/
 │   ├── css/
 │   │   └── index.css  # 前端样式
 │   └── js/
-│       └── index.js   # 前端脚本逻辑
+│       └── index.js   # 前端脚本逻辑（按页面初始化）
 ├── scripts/
 │   ├── res_ctrl/      # 电阻控制脚本
 │   │   └── ntc_res.txt    # NTC 电阻-温度对照表

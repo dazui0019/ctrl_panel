@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_title }} - 控制面板</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
+</head>
+<body data-page="{{ page }}">
+    <div class="page-shell">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark">CTRL PANEL</div>
+                <div>
+                    <h1>设备控制台</h1>
+                </div>
+            </div>
+
+            <nav class="page-nav" aria-label="主导航">
+                <a
+                    href="{{ url_for('workspace') }}"
+                    class="page-nav-link{% if page == 'workspace' %} active{% endif %}"
+                >
+                    工作页面
+                </a>
+                <a
+                    href="{{ url_for('device_management') }}"
+                    class="page-nav-link{% if page == 'device-management' %} active{% endif %}"
+                >
+                    设备管理
+                </a>
+            </nav>
+        </header>
+
+        <main class="page-body">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {% block overlays %}{% endblock %}
+
+    <script src="{{ url_for('static', filename='js/index.js') }}"></script>
+</body>
+</html>
