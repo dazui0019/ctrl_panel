@@ -103,7 +103,13 @@ function jsonOptions(method, payload) {
 }
 
 async function apiJson(url, options = {}) {
-    const response = await fetch(url, options);
+    const requestOptions = {...options};
+    const method = (requestOptions.method || 'GET').toUpperCase();
+    if (method === 'GET' && typeof requestOptions.cache === 'undefined') {
+        requestOptions.cache = 'no-store';
+    }
+
+    const response = await fetch(url, requestOptions);
     let data = {};
 
     try {

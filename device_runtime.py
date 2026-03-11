@@ -551,6 +551,7 @@ class PowerController:
     def __init__(self):
         self.ps = None
         self.address = None
+        self.io_lock = threading.Lock()
 
     def _try_decode_hex_ascii(self, text):
         if not text:
@@ -630,9 +631,17 @@ class PowerController:
             except Exception:
                 pass
 
-    def connect(self, address):
-        """连接电源"""
+    def _close_locked(self):
+        if self.ps:
+            try:
+                self.ps.close()
+            except Exception:
+                pass
+            self.ps = None
+
+    def _connect_locked(self, address):
         try:
+            self._close_locked()
             from power_ctrl.power_supply_control import PowerSupplyController
 
             self.ps = PowerSupplyController(address, verbose=False)
@@ -641,60 +650,87 @@ class PowerController:
             state.power_address = address
             return True, "连接成功"
         except Exception as e:
+            self.ps = None
             return False, str(e)
+
+    def connect(self, address):
+        """连接电源"""
+        with self.io_lock:
+            return self._connect_locked(address)
 
     def disconnect(self):
         """断开电源"""
-        if self.ps:
-            try:
-                self.ps.close()
-            except:
-                pass
-            self.ps = None
+        with self.io_lock:
+            self._close_locked()
+
+    def _measure_locked(self):
+        if not self.ps:
+            return None
+
+        voltage = self.ps.measure_voltage()
+        current = self.ps.measure_current()
+        state.power_voltage = voltage
+        state.power_current = current
+        return {"voltage": voltage, "current": current}
 
     def set_voltage(self, voltage):
         """设置电压"""
-        if not self.ps:
-            return False, "电源未连接"
-        try:
-            self.ps.set_voltage(float(voltage))
-            state.power_voltage = float(voltage)
-            return True, "设置成功"
-        except Exception as e:
-            return False, str(e)
+        with self.io_lock:
+            if not self.ps:
+                return False, "电源未连接"
+            try:
+                self.ps.set_voltage(float(voltage))
+                state.power_voltage = float(voltage)
+                return True, "设置成功"
+            except Exception as e:
+                return False, str(e)
 
     def set_current(self, current):
         """设置电流"""
-        if not self.ps:
-            return False, "电源未连接"
-        try:
-            self.ps.set_current(float(current))
-            state.power_current = float(current)
-            return True, "设置成功"
-        except Exception as e:
-            return False, str(e)
+        with self.io_lock:
+            if not self.ps:
+                return False, "电源未连接"
+            try:
+                self.ps.set_current(float(current))
+                state.power_current = float(current)
+                return True, "设置成功"
+            except Exception as e:
+                return False, str(e)
 
     def set_output(self, on):
         """设置输出开关"""
-        if not self.ps:
-            return False, "电源未连接"
-        try:
-            self.ps.set_output(bool(on))
-            state.power_output = bool(on)
-            return True, "设置成功"
-        except Exception as e:
-            return False, str(e)
+        with self.io_lock:
+            if not self.ps:
+                return False, "电源未连接"
+            try:
+                self.ps.set_output(bool(on))
+                state.power_output = bool(on)
+                return True, "设置成功"
+            except Exception as e:
+                return False, str(e)
 
     def measure(self):
         """测量电压电流"""
-        if not self.ps:
-            return None
-        try:
-            v = self.ps.measure_voltage()
-            c = self.ps.measure_current()
-            return {"voltage": v, "current": c}
-        except:
-            return None
+        with self.io_lock:
+            if not self.ps:
+                return None
+            try:
+                return self._measure_locked()
+            except Exception as e:
+                print(f"电源读取失败，准备重连后重试: {e}")
+                if not self.address:
+                    return None
+
+                success, msg = self._connect_locked(self.address)
+                if not success:
+                    print(f"电源自动重连失败: {msg}")
+                    return None
+
+                try:
+                    return self._measure_locked()
+                except Exception as retry_error:
+                    print(f"电源重连后读取仍失败: {retry_error}")
+                    return None
 
 
 power_controller = PowerController()
@@ -709,6 +745,7 @@ class ScopeController:
         self.rm = None
         self.inst = None
         self.device_id = None
+        self.serial_num = None
         self.io_lock = threading.Lock()
 
     def connect(self, serial_num="90Y701585"):
@@ -738,6 +775,28 @@ class ScopeController:
         self.rm = None
         self.inst = None
         self.device_id = None
+        self.serial_num = None
+
+    def _reconnect_current_session(self):
+        serial_num = self.serial_num or state.scope_serial
+        if not serial_num:
+            return False
+
+        was_locked = state.scope_remote_locked
+        success, msg = self.connect(serial_num)
+        if not success:
+            print(f"示波器自动重连失败: {msg}")
+            return False
+
+        try:
+            if was_locked:
+                self.lock_remote()
+            else:
+                self.unlock_local()
+        except Exception as e:
+            print(f"示波器自动重连后恢复本地/远程状态失败: {e}")
+
+        return True
 
     def _connect_tmctl(self, serial_num):
         """使用 Yokogawa tmctl DLL 连接（主要用于 Windows）"""
@@ -777,6 +836,7 @@ class ScopeController:
             self.backend = "tmctl"
             self.rm = None
             self.inst = None
+            self.serial_num = serial_num
             return True, "连接成功 (tmctl)"
         except Exception as e:
             self._clear_connection_state()
@@ -847,6 +907,7 @@ class ScopeController:
             self.inst = inst
             self.tmctl = None
             self.device_id = resource
+            self.serial_num = serial_num
             return True, f"连接成功 (pyvisa: {resource})"
         except Exception as e:
             try:
@@ -965,8 +1026,18 @@ class ScopeController:
                 cmd = f":CHANnel{channel}:DISPlay?"
                 buf_str = self._query_scpi(cmd, buf_size=1000).upper()
             return buf_str in ['1', 'ON']
-        except Exception:
-            return None
+        except Exception as e:
+            print(f"示波器读取通道状态失败，准备重连后重试: {e}")
+            if not self._reconnect_current_session():
+                return None
+            try:
+                with self.io_lock:
+                    cmd = f":CHANnel{channel}:DISPlay?"
+                    buf_str = self._query_scpi(cmd, buf_size=1000).upper()
+                return buf_str in ['1', 'ON']
+            except Exception as retry_error:
+                print(f"示波器重连后读取通道状态仍失败: {retry_error}")
+                return None
 
     def get_mean(self, channel=1):
         """获取通道平均值（不暂停示波器）"""
@@ -990,8 +1061,25 @@ class ScopeController:
             except ValueError:
                 return None
         except Exception as e:
-            print(f"示波器读取错误: {e}")
-            return None
+            print(f"示波器读取错误，准备重连后重试: {e}")
+            if not self._reconnect_current_session():
+                return None
+            try:
+                with self.io_lock:
+                    cmd = f":MEASure:CHANnel{channel}:AVERage:VALue?"
+                    buf_str = self._query_scpi(cmd, buf_size=1000)
+
+                try:
+                    buf_str = buf_str.strip()
+                    if buf_str.upper() == 'NAN':
+                        return None
+                    val = float(buf_str) * 1000.0
+                    return val
+                except ValueError:
+                    return None
+            except Exception as retry_error:
+                print(f"示波器重连后读取仍失败: {retry_error}")
+                return None
 
     def get_all_means(self, channels=[1, 2, 3, 4]):
         """获取指定通道的平均值，每个通道独立处理错误"""

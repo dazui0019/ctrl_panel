@@ -26,6 +26,16 @@ def get_request_data():
     return request.get_json(silent=True) or {}
 
 
+@app.after_request
+def disable_api_cache(response):
+    """禁用 API 响应缓存，避免工作页轮询拿到浏览器旧数据"""
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+
 # ========== Flask 路由 ==========
 
 @app.route('/')
