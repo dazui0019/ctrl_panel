@@ -819,11 +819,11 @@ class ScopeController:
             self._log("开始连接示波器", serial_num=serial_num)
             self.disconnect()
 
-            # Windows 优先 tmctl，Linux 优先 pyvisa
+            # Windows 使用 tmctl / pyvisa 双后端；Linux 仅使用 pyvisa。
             if os.name == "nt":
                 backends = [("tmctl", self._connect_tmctl), ("pyvisa", self._connect_pyvisa)]
             else:
-                backends = [("pyvisa", self._connect_pyvisa), ("tmctl", self._connect_tmctl)]
+                backends = [("pyvisa", self._connect_pyvisa)]
 
             errors = []
             for name, connect_func in backends:
@@ -962,6 +962,10 @@ class ScopeController:
 
     def _connect_tmctl(self, serial_num):
         """使用 Yokogawa tmctl DLL 连接（主要用于 Windows）"""
+        if os.name != "nt":
+            self._clear_connection_state()
+            return False, "当前系统不是 Windows，tmctl 后端不可用"
+
         try:
             # 添加 yokogawa 目录到路径（需要 DLL 文件在同一目录）
             yokogawa_dir = os.path.join(SCRIPT_DIR, 'yokogawa')
