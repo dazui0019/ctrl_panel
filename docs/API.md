@@ -148,7 +148,7 @@ POST /api/res/devices/order
 | GET | `/api/scope/get_mean` | 获取 4 通道平均值 |
 | POST | `/api/scope/copy_screenshot` | 生成并保存截图，返回客户端复制所需信息 |
 | GET | `/api/scope/screenshot/<filename>` | 读取服务端保存的 PNG 截图 |
-| POST | `/api/scope/config` | 更新前端配置状态（刷新间隔等） |
+| POST | `/api/scope/config` | 更新前端配置状态（刷新间隔、通道别名等） |
 | GET | `/api/scope/state` | 获取示波器状态 |
 
 `/api/scope/connect` 当前行为：
@@ -171,6 +171,12 @@ POST /api/res/devices/order
 `/api/scope/channel_state` / `/api/scope/get_mean` 当前返回后端后台缓存，不在请求内直接现查示波器。
 
 `/api/scope/unlock` / `/api/scope/lock` 仅切换仪器本地/远程模式，不会中断当前连接。
+
+`/api/scope/config` 补充约定：
+
+- `channel_aliases` 为可选对象，键固定为 `ch1` 到 `ch4`。
+- 别名为空字符串时，前端回退显示 `CH1` 到 `CH4`。
+- 单个别名最长 24 个字符。
 
 服务端日志说明：
 
@@ -205,7 +211,7 @@ POST /api/res/devices/order
 说明：
 
 - `/api/state` 当前返回后端统一维护的运行时缓存。
-- `scope` 对象额外包含 `channel_states` 与 `channel_values`。
+- `scope` 对象额外包含 `channel_states`、`channel_values` 与 `channel_aliases`。
 
 `/api/state` 中 `scope.locked` 含义：
 

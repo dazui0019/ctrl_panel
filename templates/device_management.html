@@ -77,6 +77,25 @@
                 <div class="toolbar">
                     <button class="btn btn-primary" onclick="scopeToggleConnect()" id="btn-scope-connect">连接</button>
                 </div>
+
+                <div class="scope-alias-grid">
+                    <label class="scope-alias-control" for="scope-alias-1">
+                        <span>CH1 别名</span>
+                        <input type="text" class="scope-alias-input" id="scope-alias-1" maxlength="24" placeholder="留空则显示 CH1" autocomplete="off" onkeydown="scopeAliasKeydown(event, 1)" onblur="scopeUpdateAlias(1)">
+                    </label>
+                    <label class="scope-alias-control" for="scope-alias-2">
+                        <span>CH2 别名</span>
+                        <input type="text" class="scope-alias-input" id="scope-alias-2" maxlength="24" placeholder="留空则显示 CH2" autocomplete="off" onkeydown="scopeAliasKeydown(event, 2)" onblur="scopeUpdateAlias(2)">
+                    </label>
+                    <label class="scope-alias-control" for="scope-alias-3">
+                        <span>CH3 别名</span>
+                        <input type="text" class="scope-alias-input" id="scope-alias-3" maxlength="24" placeholder="留空则显示 CH3" autocomplete="off" onkeydown="scopeAliasKeydown(event, 3)" onblur="scopeUpdateAlias(3)">
+                    </label>
+                    <label class="scope-alias-control" for="scope-alias-4">
+                        <span>CH4 别名</span>
+                        <input type="text" class="scope-alias-input" id="scope-alias-4" maxlength="24" placeholder="留空则显示 CH4" autocomplete="off" onkeydown="scopeAliasKeydown(event, 4)" onblur="scopeUpdateAlias(4)">
+                    </label>
+                </div>
             </div>
 
             <div class="panel">

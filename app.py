@@ -17,6 +17,9 @@ from device_runtime import (
     device_monitor,
     ResistanceDevice,
     build_res_device_status,
+    empty_scope_channel_states,
+    empty_scope_channel_values,
+    empty_scope_channel_aliases,
 )
 
 app = Flask(__name__)
@@ -25,6 +28,38 @@ app = Flask(__name__)
 def get_request_data():
     """安全读取 JSON 请求体，避免空 body 导致异常"""
     return request.get_json(silent=True) or {}
+
+
+def normalize_scope_channel_aliases(raw_aliases):
+    """校验并规范化示波器通道别名"""
+    if not isinstance(raw_aliases, dict):
+        raise ValueError("通道别名格式无效")
+
+    aliases = dict(getattr(state, "scope_channel_aliases", empty_scope_channel_aliases()))
+    valid_keys = set(aliases.keys())
+    invalid_keys = [str(key) for key in raw_aliases.keys() if key not in valid_keys]
+    if invalid_keys:
+        raise ValueError(f"无效的通道标识: {', '.join(invalid_keys)}")
+
+    for channel in range(1, 5):
+        key = f"ch{channel}"
+        if key not in raw_aliases:
+            continue
+
+        value = raw_aliases.get(key)
+        if value is None:
+            normalized = ""
+        elif isinstance(value, (str, int, float)):
+            normalized = str(value).strip()
+        else:
+            raise ValueError(f"CH{channel} 别名格式无效")
+
+        if len(normalized) > 24:
+            raise ValueError(f"CH{channel} 别名最多 24 个字符")
+
+        aliases[key] = normalized
+
+    return aliases
 
 
 @app.after_request
@@ -466,18 +501,8 @@ def scope_disconnect():
     state.scope_connected = False
     state.scope_expected_connected = False
     state.scope_remote_locked = False
-    state.scope_channel_states = {
-        "ch1": False,
-        "ch2": False,
-        "ch3": False,
-        "ch4": False,
-    }
-    state.scope_channel_values = {
-        "ch1": None,
-        "ch2": None,
-        "ch3": None,
-        "ch4": None,
-    }
+    state.scope_channel_states = empty_scope_channel_states()
+    state.scope_channel_values = empty_scope_channel_values()
     state.scope_mean_value = state.scope_channel_values
     state.scope_channels = []
     return jsonify({"success": True})
@@ -599,11 +624,16 @@ def scope_config():
         state.scope_refresh_interval = int(data['refresh_interval'])
     if 'auto_refresh' in data:
         state.scope_auto_refresh = bool(data['auto_refresh'])
-    device_monitor.request_refresh()
+    if 'channel_aliases' in data:
+        try:
+            state.scope_channel_aliases = normalize_scope_channel_aliases(data['channel_aliases'])
+        except ValueError as error:
+            return jsonify({"success": False, "message": str(error)}), 400
     return jsonify({"success": True, "config": {
         "channels": state.scope_channels,
         "refresh_interval": state.scope_refresh_interval,
-        "auto_refresh": state.scope_auto_refresh
+        "auto_refresh": state.scope_auto_refresh,
+        "channel_aliases": state.scope_channel_aliases,
     }})
 
 
@@ -614,7 +644,8 @@ def scope_state():
         "serial": state.scope_serial,
         "channels": state.scope_channels,
         "refresh_interval": state.scope_refresh_interval,
-        "mean_value": state.scope_mean_value
+        "mean_value": state.scope_mean_value,
+        "channel_aliases": state.scope_channel_aliases,
     })
 
 
@@ -642,6 +673,7 @@ def get_state():
             "channels": state.scope_channels,
             "channel_states": state.scope_channel_states,
             "channel_values": state.scope_channel_values,
+            "channel_aliases": state.scope_channel_aliases,
             "refresh_interval": state.scope_refresh_interval,
             "auto_refresh": state.scope_auto_refresh
         }

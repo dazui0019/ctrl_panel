@@ -27,6 +27,11 @@ def empty_scope_channel_states():
 def empty_scope_channel_values():
     return {f"ch{ch}": None for ch in range(1, 5)}
 
+
+def empty_scope_channel_aliases():
+    return {f"ch{ch}": "" for ch in range(1, 5)}
+
+
 # ========== 全局状态 ==========
 class DeviceState:
     """设备状态管理"""
@@ -48,6 +53,7 @@ class DeviceState:
         self.scope_channels = []  # 用户选择的通道列表
         self.scope_channel_states = empty_scope_channel_states()
         self.scope_channel_values = empty_scope_channel_values()
+        self.scope_channel_aliases = empty_scope_channel_aliases()
         self.scope_refresh_interval = 1000  # ms
         self.scope_auto_refresh = False  # 自动刷新开关
         self.scope_mean_value = None

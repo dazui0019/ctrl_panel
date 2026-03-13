@@ -823,10 +823,55 @@ input::placeholder {
     margin-top: 16px;
 }
 
+.scope-alias-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.scope-alias-control {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.scope-alias-control span {
+    color: var(--muted-strong);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+}
+
+.scope-alias-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid rgba(15, 118, 110, 0.18);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 600;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.scope-alias-input:focus {
+    outline: none;
+    border-color: rgba(15, 118, 110, 0.5);
+    box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
+    background: #fff;
+}
+
+.scope-alias-input:disabled {
+    opacity: 0.7;
+}
+
 .scope-channel {
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    gap: 16px;
     min-height: 118px;
     padding: 18px;
     border-radius: 22px;
@@ -852,10 +897,25 @@ input::placeholder {
     background: #f3f5f4;
 }
 
+.scope-channel-labels {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .ch-label {
     color: var(--ink);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.ch-base-label {
+    color: #5f736f;
+    font-size: 12px;
+    font-weight: 700;
     letter-spacing: 0.08em;
 }
 
@@ -1045,6 +1105,7 @@ input::placeholder {
     }
 
     .workspace-controls,
+    .scope-alias-grid,
     .scope-channels {
         grid-template-columns: 1fr;
     }

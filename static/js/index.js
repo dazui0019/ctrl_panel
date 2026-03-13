@@ -4,6 +4,14 @@ let powerRefreshTimer = null;
 const RES_QUICK_TEMP_STORAGE_KEY = 'res_quick_temps_v1';
 const RES_QUICK_TEMP_DEFAULTS = [-40, 25, 85];
 
+function emptyScopeChannelAliases() {
+    return {1: '', 2: '', 3: '', 4: ''};
+}
+
+function normalizeScopeAlias(value) {
+    return String(value ?? '').trim().slice(0, 24);
+}
+
 const appState = {
     page: 'workspace',
     resSerialConnected: false,
@@ -11,6 +19,7 @@ const appState = {
     scopeConnected: false,
     scopeLocked: false,
     scopeChannelStates: {1: false, 2: false, 3: false, 4: false},
+    scopeChannelAliases: emptyScopeChannelAliases(),
     devices: [],
     selectedDevices: new Set(),
     contextMenuSN: null,
@@ -214,6 +223,7 @@ function prepareStaticUi() {
     togglePowerWorkspaceControls(false);
     toggleScopeWorkspaceControls(false);
     resetScopeChannelDisplays();
+    renderAllScopeChannelAliases();
     clearResLog();
     resPortChanged();
     powerAddressChanged();
@@ -347,6 +357,10 @@ function applyScopeState(data) {
 
     if (typeof data.refresh_interval === 'number') {
         setValue('scope-interval', data.refresh_interval);
+    }
+
+    if (data.channel_aliases && typeof data.channel_aliases === 'object') {
+        setScopeChannelAliases(data.channel_aliases, true);
     }
 
     if (data.channel_states && typeof data.channel_states === 'object') {
@@ -515,6 +529,56 @@ function resetScopeChannelDisplays() {
         if (labelEl) {
             labelEl.style.color = '';
         }
+
+        const baseLabelEl = card.querySelector('.ch-base-label');
+        if (baseLabelEl) {
+            baseLabelEl.style.color = '';
+        }
+    }
+}
+
+function scopeDisplayLabel(channel) {
+    return normalizeScopeAlias(appState.scopeChannelAliases[channel]) || `CH${channel}`;
+}
+
+function setScopeChannelAliases(rawAliases, replace = false) {
+    const nextAliases = replace ? emptyScopeChannelAliases() : {...appState.scopeChannelAliases};
+    const source = rawAliases || {};
+
+    for (let channel = 1; channel <= 4; channel += 1) {
+        const key = `ch${channel}`;
+        if (!Object.prototype.hasOwnProperty.call(source, key)) {
+            continue;
+        }
+        nextAliases[channel] = normalizeScopeAlias(source[key]);
+    }
+
+    appState.scopeChannelAliases = nextAliases;
+    renderAllScopeChannelAliases();
+}
+
+function renderScopeChannelAlias(channel) {
+    const alias = normalizeScopeAlias(appState.scopeChannelAliases[channel]);
+    const labelEl = document.querySelector(`#scope-ch${channel} .ch-label`);
+    if (labelEl) {
+        labelEl.textContent = alias || `CH${channel}`;
+    }
+
+    const baseLabelEl = document.querySelector(`#scope-ch${channel} .ch-base-label`);
+    if (baseLabelEl) {
+        baseLabelEl.textContent = `CH${channel}`;
+        baseLabelEl.classList.toggle('is-hidden', !alias);
+    }
+
+    const input = $id(`scope-alias-${channel}`);
+    if (input && document.activeElement !== input) {
+        input.value = alias;
+    }
+}
+
+function renderAllScopeChannelAliases() {
+    for (let channel = 1; channel <= 4; channel += 1) {
+        renderScopeChannelAlias(channel);
     }
 }
 
@@ -1901,6 +1965,11 @@ function updateChannelStyle(channel, enabled) {
         labelEl.style.color = enabled && appState.scopeConnected ? '#11211f' : '#87908d';
     }
 
+    const baseLabelEl = card.querySelector('.ch-base-label');
+    if (baseLabelEl) {
+        baseLabelEl.style.color = enabled && appState.scopeConnected ? '#4a6762' : '#87908d';
+    }
+
     const valueEl = card.querySelector('.ch-value');
     if (valueEl && !enabled) {
         valueEl.textContent = '--';
@@ -1929,7 +1998,7 @@ async function scopeToggleChannel(channel) {
         console.error('设置示波器通道开关失败', error);
         appState.scopeChannelStates[channel] = previousState;
         updateChannelStyle(channel, previousState);
-        showToast(`设置通道 CH${channel} 失败: ${error.message || '未知错误'}`, 'error', 3600);
+        showToast(`设置通道 ${scopeDisplayLabel(channel)} 失败: ${error.message || '未知错误'}`, 'error', 3600);
     }
 }
 
@@ -1942,6 +2011,59 @@ async function syncScopeConfigChannels() {
         }));
     } catch (error) {
         console.error('同步示波器通道配置失败', error);
+    }
+}
+
+async function scopeUpdateAlias(channel) {
+    const input = $id(`scope-alias-${channel}`);
+    if (!input || input.dataset.saving === '1') {
+        return;
+    }
+
+    const previousAlias = normalizeScopeAlias(appState.scopeChannelAliases[channel]);
+    const nextAlias = normalizeScopeAlias(input.value);
+    input.value = nextAlias;
+
+    if (nextAlias === previousAlias) {
+        renderScopeChannelAlias(channel);
+        return;
+    }
+
+    input.dataset.saving = '1';
+
+    try {
+        const data = await apiJson('/api/scope/config', jsonOptions('POST', {
+            channel_aliases: {
+                [`ch${channel}`]: nextAlias,
+            },
+        }));
+        if (data.config && data.config.channel_aliases) {
+            setScopeChannelAliases(data.config.channel_aliases, true);
+        } else {
+            setScopeChannelAliases({[`ch${channel}`]: nextAlias});
+        }
+    } catch (error) {
+        console.error('保存示波器通道别名失败', error);
+        setScopeChannelAliases({[`ch${channel}`]: previousAlias});
+        input.value = previousAlias;
+        showToast(`保存 CH${channel} 别名失败: ${error.message || '未知错误'}`, 'error', 3600);
+    } finally {
+        delete input.dataset.saving;
+    }
+}
+
+async function scopeAliasKeydown(event, channel) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        await scopeUpdateAlias(channel);
+        event.target.blur();
+        return;
+    }
+
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        event.target.value = normalizeScopeAlias(appState.scopeChannelAliases[channel]);
+        event.target.blur();
     }
 }
 
