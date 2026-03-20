@@ -111,6 +111,8 @@ POST /api/res/devices/order
 - `/api/power/list_resources` 当前通过独立子进程扫描 VISA 资源，避免干扰主进程内已打开的示波器 session。
 - `/api/power/connect` 对同一地址是幂等的；已连接时再次请求会直接返回“电源已连接”。
 - `/api/power/measure` 当前返回后端后台缓存，而不是在请求内直接访问电源。
+- `/api/state` 中 `power.voltage` / `power.current` 表示实测值；`power.set_voltage` / `power.set_current` 表示最近一次成功下发到电源的设定值。
+- 最近一次成功设定的电压/电流会持久化到 `scripts/power_ctrl/control_panel_power_config.json`，后端重启后仍会恢复到输入框。
 
 `/api/power/list_resources` 返回示例：
 
@@ -211,6 +213,7 @@ POST /api/res/devices/order
 说明：
 
 - `/api/state` 当前返回后端统一维护的运行时缓存。
+- `power` 对象同时区分测量值与设定值：`voltage/current` 为实测，`set_voltage/set_current` 为最近一次设定。
 - `scope` 对象额外包含 `channel_states`、`channel_values` 与 `channel_aliases`。
 
 `/api/state` 中 `scope.locked` 含义：

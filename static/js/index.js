@@ -317,13 +317,13 @@ function applyPowerState(data) {
         connectButton.textContent = appState.powerConnected ? '断开' : '连接';
     }
 
-    if (typeof data.voltage === 'number' && $id('power-voltage')) {
-        setValue('power-voltage', data.voltage);
-        $id('power-voltage').dataset.lastAppliedValue = String(data.voltage);
+    if (typeof data.set_voltage === 'number' && $id('power-voltage')) {
+        setValue('power-voltage', data.set_voltage);
+        $id('power-voltage').dataset.lastAppliedValue = String(data.set_voltage);
     }
-    if (typeof data.current === 'number' && $id('power-current')) {
-        setValue('power-current', data.current);
-        $id('power-current').dataset.lastAppliedValue = String(data.current);
+    if (typeof data.set_current === 'number' && $id('power-current')) {
+        setValue('power-current', data.set_current);
+        $id('power-current').dataset.lastAppliedValue = String(data.set_current);
     }
 
     setText('power-resource-label', data.address || '--');

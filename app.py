@@ -664,6 +664,8 @@ def get_state():
             "address": state.power_address,
             "voltage": state.power_voltage,
             "current": state.power_current,
+            "set_voltage": state.power_set_voltage,
+            "set_current": state.power_set_current,
             "output": state.power_output
         },
         "scope": {

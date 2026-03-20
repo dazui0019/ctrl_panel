@@ -44,6 +44,8 @@ class DeviceState:
         self.power_address = None
         self.power_voltage = None
         self.power_current = None
+        self.power_set_voltage = None
+        self.power_set_current = None
         self.power_output = False
 
         self.scope_serial = "90Y701585"
@@ -571,6 +573,46 @@ class PowerController:
         self.ps = None
         self.address = None
         self.io_lock = threading.Lock()
+        self.config_file = os.path.join(SCRIPT_DIR, 'power_ctrl', 'control_panel_power_config.json')
+        self.load_settings()
+
+    def load_settings(self):
+        """加载控制面板保存的电源设定值"""
+        if not os.path.exists(self.config_file):
+            return
+
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                saved_config = json.load(f)
+        except Exception as e:
+            print(f"加载电源设定值失败: {e}")
+            return
+
+        if not isinstance(saved_config, dict):
+            return
+
+        for field_name in ("power_set_voltage", "power_set_current"):
+            raw_value = saved_config.get(field_name)
+            if raw_value is None:
+                setattr(state, field_name, None)
+                continue
+
+            try:
+                setattr(state, field_name, float(raw_value))
+            except Exception:
+                print(f"忽略无效电源设定值 {field_name}: {raw_value}")
+
+    def save_settings(self):
+        """保存控制面板电源设定值"""
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "power_set_voltage": state.power_set_voltage,
+                    "power_set_current": state.power_set_current,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存电源设定值失败: {e}")
 
     def _try_decode_hex_ascii(self, text):
         if not text:
@@ -739,7 +781,8 @@ finally:
                 return False, "电源未连接"
             try:
                 self.ps.set_voltage(float(voltage))
-                state.power_voltage = float(voltage)
+                state.power_set_voltage = float(voltage)
+                self.save_settings()
                 return True, "设置成功"
             except Exception as e:
                 return False, str(e)
@@ -751,7 +794,8 @@ finally:
                 return False, "电源未连接"
             try:
                 self.ps.set_current(float(current))
-                state.power_current = float(current)
+                state.power_set_current = float(current)
+                self.save_settings()
                 return True, "设置成功"
             except Exception as e:
                 return False, str(e)
