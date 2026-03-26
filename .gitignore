@@ -37,6 +37,7 @@ Thumbs.db
 .env.local
 *.log
 .ctrl_panel.pid
+.ctrl_panel_power_config.json
 
 # Runtime screenshots
 screenshots/

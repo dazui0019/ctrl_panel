@@ -112,7 +112,8 @@ POST /api/res/devices/order
 - `/api/power/connect` 对同一地址是幂等的；已连接时再次请求会直接返回“电源已连接”。
 - `/api/power/measure` 当前返回后端后台缓存，而不是在请求内直接访问电源。
 - `/api/state` 中 `power.voltage` / `power.current` 表示实测值；`power.set_voltage` / `power.set_current` 表示最近一次成功下发到电源的设定值。
-- 最近一次成功设定的电压/电流会持久化到 `scripts/power_ctrl/control_panel_power_config.json`，后端重启后仍会恢复到输入框。
+- 最近一次成功设定的电压/电流会持久化到主仓库根目录的 `.ctrl_panel_power_config.json`，后端重启后仍会恢复到输入框。
+- 如果本机之前已经把该文件写到 `scripts/power_ctrl/control_panel_power_config.json`，服务启动时会自动迁移到新位置。
 
 `/api/power/list_resources` 返回示例：
 

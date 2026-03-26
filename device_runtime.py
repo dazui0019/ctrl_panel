@@ -14,8 +14,10 @@ import time
 import subprocess
 import shutil
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # 添加 scripts 目录到路径
-SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
+SCRIPT_DIR = os.path.join(BASE_DIR, 'scripts')
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
@@ -573,16 +575,21 @@ class PowerController:
         self.ps = None
         self.address = None
         self.io_lock = threading.Lock()
-        self.config_file = os.path.join(SCRIPT_DIR, 'power_ctrl', 'control_panel_power_config.json')
+        self.config_file = os.path.join(BASE_DIR, '.ctrl_panel_power_config.json')
+        self.legacy_config_file = os.path.join(SCRIPT_DIR, 'power_ctrl', 'control_panel_power_config.json')
         self.load_settings()
 
     def load_settings(self):
         """加载控制面板保存的电源设定值"""
-        if not os.path.exists(self.config_file):
-            return
+        source_file = self.config_file
+        if not os.path.exists(source_file):
+            if os.path.exists(self.legacy_config_file):
+                source_file = self.legacy_config_file
+            else:
+                return
 
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
+            with open(source_file, 'r', encoding='utf-8') as f:
                 saved_config = json.load(f)
         except Exception as e:
             print(f"加载电源设定值失败: {e}")
@@ -602,6 +609,9 @@ class PowerController:
             except Exception:
                 print(f"忽略无效电源设定值 {field_name}: {raw_value}")
 
+        if source_file == self.legacy_config_file:
+            self._migrate_legacy_settings_file()
+
     def save_settings(self):
         """保存控制面板电源设定值"""
         try:
@@ -613,6 +623,16 @@ class PowerController:
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存电源设定值失败: {e}")
+
+    def _migrate_legacy_settings_file(self):
+        """将旧的子模块内配置迁移到主仓库运行时文件"""
+        self.save_settings()
+        try:
+            os.remove(self.legacy_config_file)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            print(f"清理旧电源设定值文件失败: {e}")
 
     def _try_decode_hex_ascii(self, text):
         if not text:
