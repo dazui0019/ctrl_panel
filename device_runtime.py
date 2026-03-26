@@ -794,43 +794,96 @@ finally:
         state.power_current = current
         return {"voltage": voltage, "current": current}
 
+    def _execute_with_reconnect_locked(self, action_name, func, success_message="设置成功"):
+        if not self.ps:
+            return False, "电源未连接"
+
+        try:
+            result = func()
+            if result is False:
+                raise RuntimeError(f"{action_name}失败")
+            return True, success_message
+        except Exception as e:
+            print(f"电源{action_name}失败，准备重连后重试: {e}")
+            if not self.address:
+                return False, str(e)
+
+            success, msg = self._connect_locked(self.address)
+            if not success:
+                return False, f"{e}; 自动重连失败: {msg}"
+
+            try:
+                result = func()
+                if result is False:
+                    raise RuntimeError(f"{action_name}失败")
+                return True, success_message
+            except Exception as retry_error:
+                return False, str(retry_error)
+
     def set_voltage(self, voltage):
         """设置电压"""
         with self.io_lock:
-            if not self.ps:
-                return False, "电源未连接"
             try:
-                self.ps.set_voltage(float(voltage))
-                state.power_set_voltage = float(voltage)
+                voltage = float(voltage)
+            except (TypeError, ValueError):
+                return False, "无效的电压值"
+
+            success, msg = self._execute_with_reconnect_locked(
+                "设置电压",
+                lambda: self.ps.set_voltage(voltage)
+            )
+            if success:
+                state.power_set_voltage = voltage
                 self.save_settings()
-                return True, "设置成功"
-            except Exception as e:
-                return False, str(e)
+            return success, msg
 
     def set_current(self, current):
         """设置电流"""
         with self.io_lock:
-            if not self.ps:
-                return False, "电源未连接"
             try:
-                self.ps.set_current(float(current))
-                state.power_set_current = float(current)
+                current = float(current)
+            except (TypeError, ValueError):
+                return False, "无效的电流值"
+
+            success, msg = self._execute_with_reconnect_locked(
+                "设置电流",
+                lambda: self.ps.set_current(current)
+            )
+            if success:
+                state.power_set_current = current
                 self.save_settings()
-                return True, "设置成功"
-            except Exception as e:
-                return False, str(e)
+            return success, msg
 
     def set_output(self, on):
         """设置输出开关"""
         with self.io_lock:
-            if not self.ps:
-                return False, "电源未连接"
-            try:
-                self.ps.set_output(bool(on))
+            on = bool(on)
+            success, msg = self._execute_with_reconnect_locked(
+                "设置输出",
+                lambda: self.ps.set_output(on)
+            )
+            if success:
                 state.power_output = bool(on)
-                return True, "设置成功"
-            except Exception as e:
-                return False, str(e)
+            return success, msg
+
+    def _set_local_mode_locked(self):
+        if not self.ps:
+            raise RuntimeError("电源未连接")
+
+        instrument = getattr(self.ps, "instrument", None)
+        if instrument is None:
+            raise RuntimeError("电源连接会话无效")
+
+        instrument.write('SYST:LOC')
+
+    def unlock_local(self):
+        """切回电源本地控制，允许前面板继续操作"""
+        with self.io_lock:
+            return self._execute_with_reconnect_locked(
+                "切回本地控制",
+                self._set_local_mode_locked,
+                success_message="已切回本地控制"
+            )
 
     def measure(self):
         """测量电压电流"""

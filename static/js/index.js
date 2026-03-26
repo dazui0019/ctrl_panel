@@ -1587,6 +1587,16 @@ function powerStepParam(inputId, field, direction) {
     input.focus({preventScroll: true});
 }
 
+function handlePowerSetResponse(data, expectedActions = []) {
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const failedAction = results.find((item) => (
+        expectedActions.includes(item.action) && item.success === false
+    ));
+    if (failedAction) {
+        throw new Error(failedAction.message || '电源设置失败');
+    }
+}
+
 async function powerApplySingleParam(field, input = null) {
     const target = input || $id(field === 'voltage' ? 'power-voltage' : 'power-current');
     if (!target) {
@@ -1619,7 +1629,8 @@ async function powerApplySingleParam(field, input = null) {
     target.dataset.pendingAppliedValue = normalizedValue;
 
     try {
-        await apiJson('/api/power/set', jsonOptions('POST', payload));
+        const data = await apiJson('/api/power/set', jsonOptions('POST', payload));
+        handlePowerSetResponse(data, [field]);
         target.dataset.lastAppliedValue = normalizedValue;
     } catch (error) {
         console.error(`设置电源${field}失败`, error);
@@ -1667,7 +1678,11 @@ async function powerDisconnect() {
         }
 
         applyPowerState({connected: false, address: null});
-        showToast('电源已断开', 'info', 2200);
+        showToast(
+            data.message || '电源已断开',
+            data.unlock_local_success === false ? 'error' : 'info',
+            data.unlock_local_success === false ? 4200 : 2600
+        );
     } catch (error) {
         console.error('断开电源失败', error);
         showToast(`断开电源失败: ${error.message || '未知错误'}`, 'error', 3600);
@@ -1691,7 +1706,8 @@ async function powerSetOutput(on) {
     }
 
     try {
-        await apiJson('/api/power/set', jsonOptions('POST', {output: on}));
+        const data = await apiJson('/api/power/set', jsonOptions('POST', {output: on}));
+        handlePowerSetResponse(data, ['output']);
     } catch (error) {
         console.error('设置电源输出失败', error);
         showToast(`设置电源输出失败: ${error.message || '未知错误'}`, 'error', 3600);

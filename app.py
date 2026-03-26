@@ -408,6 +408,11 @@ def power_connect():
 @app.route('/api/power/disconnect', methods=['POST'])
 def power_disconnect():
     """断开电源"""
+    unlock_success = True
+    unlock_msg = ""
+    if state.power_connected:
+        unlock_success, unlock_msg = power_controller.unlock_local()
+
     power_controller.disconnect()
     state.power_connected = False
     state.power_address = None
@@ -415,7 +420,18 @@ def power_disconnect():
     state.power_current = None
     state.power_output = False
     device_monitor.request_refresh()
-    return jsonify({"success": True})
+    if unlock_success:
+        return jsonify({
+            "success": True,
+            "message": "已切回本地控制并断开电源连接",
+            "unlock_local_success": True,
+        })
+
+    return jsonify({
+        "success": True,
+        "message": f"电源已断开，但切回本地控制失败: {unlock_msg}",
+        "unlock_local_success": False,
+    })
 
 
 @app.route('/api/power/set', methods=['POST'])
@@ -443,7 +459,6 @@ def power_set():
     if any(item["success"] for item in results):
         device_monitor.request_refresh()
     return jsonify({"results": results})
-
 
 @app.route('/api/power/measure', methods=['GET'])
 def power_measure():
